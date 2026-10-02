@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from curl_cffi import requests
-import json
 
 # --- Course Configuration Registry ---
 CHRONOGOLF_COURSES = [
@@ -11,14 +10,12 @@ CHRONOGOLF_COURSES = [
         "name": "D'Arcy Ranch Golf Club",
         "club_slug": "d-arcy-ranch-golf-club",
         "ids": ["da3eb64e-8ff4-4a43-9958-2e36f108ce4e", "5a18dff5-d436-4574-b25f-75ad6fd82bd1"],
-        "holes": "9,18",
         "color": "#1E3A8A"  # Deep Blue
     },
     {
         "name": "Lynx Ridge Golf Club",
         "club_slug": "lynx-ridge-golf-club",
         "ids": ["f0ffad1a-9857-4396-ba29-b3b6437ada54"],
-        "holes": "9,18,19",
         "color": "#065F46"  # Forest Green
     },
     {
@@ -29,14 +26,12 @@ CHRONOGOLF_COURSES = [
             "fcad2564-a611-4137-9c38-1d02abe77b78", "c4924955-d232-4d52-bd90-6ba5eeea88d1",
             "04beb0e0-6718-47a5-8a47-7e5aa076505b", "457a26d8-1924-48c0-936b-d19af99e3bcd"
         ],
-        "holes": "9,18",
         "color": "#9A3412"  # Rust Amber
     },
     {
         "name": "Sundre Golf Club",
         "club_slug": "sundre-golf-club",
         "ids": ["804f0be1-3772-4dcb-bf8a-540dd4727ba0"],
-        "holes": "9,18",
         "color": "#581C87"  # Deep Purple
     },
     {
@@ -46,14 +41,12 @@ CHRONOGOLF_COURSES = [
             "defd9bf6-3d27-40e8-b511-db6f6d1a9318", "31781402-a719-43d8-ae00-fb41a99dce2f",
             "22476e2b-1c0a-4470-86bd-d55c8898b478"
         ],
-        "holes": "9,18",
         "color": "#0F766E"  # Dark Teal
     },
     {
         "name": "Sirocco Golf Club",
         "club_slug": "sirocco-golf-club",
         "ids": ["eb90994d-d150-4234-b0c3-67c239a78cf3"],
-        "holes": "9,18",
         "color": "#9D174D"  # Berry Rose
     }
 ]
@@ -61,15 +54,17 @@ CHRONOGOLF_COURSES = [
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
 
 def parse_slot_time(item):
-    """Safely extracts local time across all Chronogolf formats."""
-    raw = item.get("start_time") or item.get("time") or item.get("date")
+    """Extract local tee time."""
+    raw = item.get("start_time") or item.get("time")
     if not raw:
         return None
     raw_str = str(raw).strip()
     
-    if len(raw_str) == 5 and ":" in raw_str:
+    # "9:00" or "09:00"
+    if ":" in raw_str and "T" not in raw_str:
         try:
-            return datetime.strptime(raw_str, "%H:%M").time()
+            parts = raw_str.split(":")
+            return datetime.strptime(f"{int(parts[0]):02d}:{parts[1]}", "%H:%M").time()
         except Exception:
             pass
 
@@ -78,76 +73,48 @@ def parse_slot_time(item):
             if raw_str.endswith("Z"):
                 dt = datetime.fromisoformat(raw_str.replace("Z", "+00:00"))
                 return dt.astimezone(ZoneInfo("America/Edmonton")).time()
-            elif "+" in raw_str or "-" in raw_str[10:]:
-                dt = datetime.fromisoformat(raw_str)
-                return dt.astimezone(ZoneInfo("America/Edmonton")).time()
             else:
                 return datetime.fromisoformat(raw_str).time()
         except Exception:
             pass
+    return None
 
-    try:
-        return datetime.strptime(raw_str[:5], "%H:%M").time()
-    except Exception:
-        return None
+def evaluate_chronogolf_slot(item, requested_spots):
+    """
+    Evaluates bookability using Chronogolf's default_price, player limits, and holes.
+    Returns (is_valid, open_spots, price_str, holes_count)
+    """
+    # Check frozen, blocked, or out of capacity
+    if item.get("frozen") is True or item.get("out_of_capacity") is True:
+        return False, 0, "", 0
 
-def extract_capacity_and_price(item):
-    """Extracts capacity and price without discarding records."""
-    if item.get("out_of_capacity") is True or item.get("sold_out") is True:
-        return 0, "$0.00"
+    # Player size constraints
+    min_size = item.get("min_player_size", 1)
+    max_size = item.get("max_player_size", 4)
 
-    # Price search
-    price_val = None
-    for k in ["green_fee", "price", "rate", "cost"]:
-        v = item.get(k)
-        if isinstance(v, (int, float)) and v > 0:
-            price_val = v
-            break
+    # If the user is filtering for single players (1), but min_player_size is 2, it is not bookable
+    if requested_spots < min_size or requested_spots > max_size:
+        return False, 0, "", 0
 
-    options = item.get("green_fee_options", [])
-    if price_val is None and isinstance(options, list):
-        for opt in options:
-            if isinstance(opt, dict):
-                for k in ["price", "rate", "green_fee", "cost"]:
-                    v = opt.get(k)
-                    if isinstance(v, (int, float)) and v > 0:
-                        price_val = v
-                        break
-                if price_val:
-                    break
+    # Rate and pricing evaluation
+    default_price = item.get("default_price", {})
+    if not isinstance(default_price, dict):
+        return False, 0, "", 0
 
-    if price_val:
-        price_str = f"${price_val / 100:.2f}" if price_val > 500 else f"${price_val:.2f}"
-    else:
-        price_str = "$100.00"
+    subtotal = default_price.get("subtotal") or default_price.get("green_fee")
+    if subtotal is None or subtotal <= 0:
+        return False, 0, "", 0
 
-    # Spots search
-    open_spots = 0
-    if "available_spots" in item and item["available_spots"] is not None:
-        open_spots = int(item["available_spots"])
-    elif "open_slots" in item and item["open_slots"] is not None:
-        open_spots = int(item["open_slots"])
-    elif "player_counts" in item and isinstance(item["player_counts"], list):
-        valid_p = [int(p) for p in item["player_counts"] if str(p).isdigit()]
-        if valid_p:
-            open_spots = max(valid_p)
+    price_str = f"${subtotal:.2f}"
 
-    if open_spots == 0 and isinstance(options, list):
-        for opt in options:
-            if isinstance(opt, dict):
-                if "player_counts" in opt and isinstance(opt["player_counts"], list):
-                    valid_p = [int(p) for p in opt["player_counts"] if str(p).isdigit()]
-                    if valid_p:
-                        open_spots = max(valid_p)
-                elif "player_count" in opt and str(opt["player_count"]).isdigit():
-                    open_spots = max(open_spots, int(opt["player_count"]))
+    # Determine holes
+    holes = default_price.get("bookable_holes")
+    if not holes:
+        course_obj = item.get("course", {})
+        bookable = course_obj.get("bookable_holes", [])
+        holes = max(bookable) if bookable else 18
 
-    if open_spots == 0:
-        max_c = item.get("max_player_count") or item.get("max_players") or 4
-        booked = len(item.get("booked_players", [])) if isinstance(item.get("booked_players"), list) else 0
-        open_spots = max(1, max_c - booked)
-
-    return open_spots, price_str
+    return True, max_size, price_str, holes
 
 def fetch_course_teetimes(session, course, date_str):
     """Fetch public tee sheet using Chrome TLS impersonation."""
@@ -155,7 +122,7 @@ def fetch_course_teetimes(session, course, date_str):
     params = {
         "start_date": date_str,
         "course_ids": ",".join(course["ids"]),
-        "holes": course["holes"],
+        "holes": "9,18",
         "page": "1"
     }
     headers = {
@@ -212,22 +179,24 @@ st.title("⛳ First Right of Refusal Golf Tee Sheet")
 st.sidebar.header("Filter Settings")
 max_time = st.sidebar.time_input("Latest Tee Time (Morning Cutoff)", datetime.strptime("11:59", "%H:%M").time())
 min_spots = st.sidebar.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=0)
+holes_filter = st.sidebar.radio("Round Length", options=["18 Holes Only", "Any (9 or 18 Holes)"], index=0)
+
 selected_courses = st.sidebar.multiselect(
     "Select Courses",
     options=[c["name"] for c in CHRONOGOLF_COURSES],
     default=[c["name"] for c in CHRONOGOLF_COURSES]
 )
 
-if st.button("🔄 Refresh Data"):
+if st.button("🔄 Refresh Data (Force Clear Cache)"):
     st.cache_data.clear()
+    st.rerun()
 
 # --- Data Fetching & Processing ---
-@st.cache_data(ttl=180)
-def load_all_data():
+@st.cache_data(ttl=60)
+def load_all_data(requested_spots, only_18_holes):
     weekend_dates = get_target_weekend_dates(num_weeks=2)
     rows = []
     diagnostics = []
-    raw_sample = None
     session = requests.Session()
 
     for course in CHRONOGOLF_COURSES:
@@ -247,17 +216,17 @@ def load_all_data():
                 if not isinstance(item, dict):
                     continue
 
-                if raw_sample is None and course["name"] == "D'Arcy Ranch Golf Club":
-                    raw_sample = item
-
                 t_val = parse_slot_time(item)
                 if not t_val:
                     continue
 
                 if t_val <= max_time:
-                    open_spots, price_str = extract_capacity_and_price(item)
+                    is_valid, open_spots, price_str, holes = evaluate_chronogolf_slot(item, requested_spots)
                     
-                    if open_spots < min_spots:
+                    if not is_valid:
+                        continue
+
+                    if only_18_holes and holes != 18:
                         continue
 
                     time_key = (course["name"], date_str, t_val.strftime("%H:%M"))
@@ -275,14 +244,16 @@ def load_all_data():
                         "Time": t_val.strftime("%I:%M %p"),
                         "Open Spots": open_spots,
                         "Price": price_str,
-                        "Holes": item.get("holes", 18),
+                        "Holes": holes,
                         "Book": booking_url,
                         "RawTime": t_val
                     })
-    return rows, diagnostics, raw_sample
+    return rows, diagnostics
+
+only_18 = (holes_filter == "18 Holes Only")
 
 with st.spinner("Fetching live tee sheets..."):
-    results, diag_logs, sample_debug = load_all_data()
+    results, diag_logs = load_all_data(min_spots, only_18)
 
 COLUMN_CONFIG = {
     "Course": st.column_config.TextColumn("Course", alignment="left"),
@@ -363,9 +334,6 @@ if results:
 else:
     st.info("No morning tee times found matching your criteria, or tee sheets are not yet open for these dates.")
 
-with st.expander("🛠 API Connection Diagnostics & Raw Sample"):
+with st.expander("🛠 API Connection Diagnostics"):
     for log in diag_logs:
         st.text(log)
-    if sample_debug:
-        st.write("Raw Sample Item from D'Arcy Ranch:")
-        st.json(sample_debug)
