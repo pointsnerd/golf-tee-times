@@ -67,7 +67,6 @@ COURSE_RATES_9 = {
 }
 
 def parse_slot_time(item):
-    """Extract local tee time."""
     raw = item.get("start_time") or item.get("time")
     if not raw:
         return None
@@ -92,10 +91,6 @@ def parse_slot_time(item):
     return None
 
 def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_slug):
-    """
-    Evaluates bookability using Chronogolf's default_price, player limits, and selected round length (18 or 9).
-    Returns (is_valid, spots_display, price_str, holes_display)
-    """
     if item.get("frozen") is True or item.get("out_of_capacity") is True:
         return False, "", "", ""
 
@@ -175,7 +170,6 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     return True, spots_display, price_str, holes_display
 
 def fetch_course_teetimes(session, course, date_str):
-    """Fetch public tee sheet using Chrome TLS impersonation with rate-limit pacing and retry on 429."""
     base_url = "https://www.chronogolf.com/marketplace/v2/teetimes"
     params = {
         "start_date": date_str,
@@ -248,7 +242,8 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# Responsive layout handling desktop vs mobile explicitly
+# STRICT SCOPING: Only touch sidebar container geometry on desktop.
+# Let mobile preserve 100% of native Streamlit drawer positioning & transitions.
 st.markdown("""
 <style>
     .stApp {
@@ -257,15 +252,15 @@ st.markdown("""
     }
     section[data-testid="stSidebar"] {
         background-color: #0B1120;
-        border-right: 1px solid #1E293B;
     }
 
-    /* ---------------- DESKTOP (Screens >= 1024px) ---------------- */
+    /* DESKTOP ONLY: Apply custom 1/3 viewport geometry */
     @media (min-width: 1024px) {
         section[data-testid="stSidebar"] {
             width: 32vw !important;
             min-width: 380px !important;
             max-width: 480px !important;
+            border-right: 1px solid #1E293B;
         }
         section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
             gap: 0.15rem !important;
@@ -280,27 +275,13 @@ st.markdown("""
         }
     }
 
-    /* ---------------- MOBILE (Screens < 1024px) ---------------- */
+    /* MOBILE ONLY: Do NOT touch sidebar container/drawer transforms */
     @media (max-width: 1023px) {
-        /* Let Streamlit's native drawer size naturally without pushing content offscreen */
-        section[data-testid="stSidebar"] {
-            width: 100vw !important;
-            min-width: 100vw !important;
-            max-width: 100vw !important;
-            box-sizing: border-box !important;
-            padding: 0.5rem !important;
-        }
-        section[data-testid="stSidebar"] > div {
-            width: 100% !important;
-            padding-left: 0.5rem !important;
-            padding-right: 0.5rem !important;
-        }
-        /* Ensure calendar columns fit side-by-side on mobile without overflow */
+        /* Allow horizontal columns to fit neatly inside the native drawer without overflowing */
         section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: nowrap !important;
-            justify-content: space-between !important;
             gap: 2px !important;
             width: 100% !important;
         }
@@ -309,18 +290,12 @@ st.markdown("""
             min-width: 0 !important;
             padding: 0 !important;
         }
-        section[data-testid="stSidebar"] div[data-testid="stButton"] {
-            width: 100% !important;
-        }
         section[data-testid="stSidebar"] div[data-testid="stButton"] button {
             width: 100% !important;
             padding: 4px 0px !important;
-            min-height: 32px !important;
+            min-height: 34px !important;
             font-size: 10px !important;
             border-radius: 4px !important;
-            overflow: hidden !important;
-            text-overflow: clip !important;
-            white-space: nowrap !important;
         }
     }
 
