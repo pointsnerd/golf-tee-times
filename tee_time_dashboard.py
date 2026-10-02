@@ -98,33 +98,42 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if item.get("frozen") is True or item.get("out_of_capacity") is True:
         return False, "", "", ""
 
-    max_size = item.get("max_player_size")
-    min_size = item.get("min_player_size", 1)
+    # 1. Capacity resolution
+    # Collect all supported player counts across root, player_counts, and green_fee_options
+    valid_player_set = set()
 
-    if not max_size:
-        if "player_counts" in item and isinstance(item["player_counts"], list):
-            valid_p = [int(p) for p in item["player_counts"] if str(p).isdigit()]
-            if valid_p:
-                max_size = max(valid_p)
-                min_size = min(valid_p)
+    if "player_counts" in item and isinstance(item["player_counts"], list):
+        for p in item["player_counts"]:
+            if str(p).isdigit():
+                valid_player_set.add(int(p))
 
-    if not max_size:
-        options = item.get("green_fee_options", [])
-        if isinstance(options, list):
-            for opt in options:
-                if isinstance(opt, dict) and "player_counts" in opt and isinstance(opt["player_counts"], list):
-                    valid_p = [int(p) for p in opt["player_counts"] if str(p).isdigit()]
-                    if valid_p:
-                        max_size = max(valid_p)
-                        min_size = min(valid_p)
-                        break
+    for opt in item.get("green_fee_options", []):
+        if isinstance(opt, dict) and "player_counts" in opt and isinstance(opt["player_counts"], list):
+            for p in opt["player_counts"]:
+                if str(p).isdigit():
+                    valid_player_set.add(int(p))
 
-    if not max_size:
-        max_size = 4
+    max_p = item.get("max_player_size")
+    min_p = item.get("min_player_size")
 
-    if max_size < requested_spots:
+    if max_p and str(max_p).isdigit():
+        valid_player_set.add(int(max_p))
+    if min_p and str(min_p).isdigit():
+        valid_player_set.add(int(min_p))
+
+    # If no explicit counts found, fallback to 1-4
+    if not valid_player_set:
+        min_size, max_size = 1, 4
+    else:
+        min_size = min(valid_player_set)
+        max_size = max(valid_player_set)
+
+    # Check if this tee time can accommodate AT LEAST `requested_spots` players
+    # (i.e. if looking for 2 players, the slot must support up to >= 2 players, and min_size <= 2)
+    if requested_spots > max_size or requested_spots < min_size:
         return False, "", "", ""
 
+    # 2. Holes validation
     bookable_holes = set()
     default_price = item.get("default_price", {})
     
@@ -155,6 +164,7 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if selected_round_length not in bookable_holes:
         return False, "", "", ""
 
+    # 3. Adult Public Rate with Cart Assignment
     if selected_round_length == 18:
         price_str = COURSE_RATES_18.get(club_slug, "$130.00")
     else:
@@ -217,16 +227,14 @@ try:
 except Exception:
     calgary_today = datetime.now().date()
 
-# Query only the next 14 consecutive days to ensure fast network loading
+# 14-day rolling window
 monitored_14_days = [calgary_today + timedelta(days=i) for i in range(14)]
 monitored_14_set = {d.strftime("%Y-%m-%d") for d in monitored_14_days}
 
-# Calendar display uses current Calgary month
 curr_year = calgary_today.year
 curr_month = calgary_today.month
 month_title = f"{calendar.month_name[curr_month]} {curr_year}"
 
-# Build full month matrix starting on Sunday
 cal_obj = calendar.Calendar(firstweekday=calendar.SUNDAY)
 month_weeks = cal_obj.monthdayscalendar(curr_year, curr_month)
 
@@ -235,7 +243,6 @@ st.set_page_config(page_title="First Right of Refusal Golf Tee Sheet", layout="w
 
 st.markdown("""
 <style>
-    /* Sidebar width ~1/3 screen */
     section[data-testid="stSidebar"] {
         width: 32vw !important;
         min-width: 380px !important;
@@ -285,7 +292,7 @@ with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
         st.cache_data.clear()
         st.rerun()
 
-# --- 3. Data Fetching & Processing (14 Days Only) ---
+# --- 3. Data Fetching & Processing ---
 @st.cache_data(ttl=60)
 def load_all_data(requested_spots, selected_holes, selected_time_period):
     rows = []
@@ -348,7 +355,7 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
                 })
     return rows, diagnostics
 
-with st.spinner("Fetching live tee sheets (14-day window)..."):
+with st.spinner("Fetching live tee sheets..."):
     results, diag_logs = load_all_data(min_spots, round_length, time_filter)
 
 day_counts = {}
@@ -366,7 +373,7 @@ default_selected = future_with_times[0] if future_with_times else calgary_today.
 if "active_calendar_date" not in st.session_state:
     st.session_state["active_calendar_date"] = default_selected
 
-# --- Render Full Month Calendar at Top of Sidebar ---
+# --- Sidebar: Calendar Render ---
 with cal_top_container:
     st.markdown(f"### 📅 {month_title}")
     
@@ -383,7 +390,7 @@ with cal_top_container:
         for d_idx, day_num in enumerate(week):
             with w_cols[d_idx]:
                 if day_num == 0:
-                    st.button(" ", key=f"empty_day_{w_cols}_{d_idx}", disabled=True, use_container_width=True)
+                    st.button(" ", key=f"empty_day_{week}_{d_idx}", disabled=True, use_container_width=True)
                 else:
                     d_obj = date(curr_year, curr_month, day_num)
                     d_str = d_obj.strftime("%Y-%m-%d")
@@ -395,7 +402,6 @@ with cal_top_container:
                     btn_text = f"Oct {day_num}" if curr_month == 10 else f"{d_obj.strftime('%b')} {day_num}"
                     btn_type = "primary" if is_active else "secondary"
 
-                    # Only clickable if within the 14-day monitored window AND has tee times
                     if is_monitored and has_times:
                         if st.button(
                             btn_text, 
