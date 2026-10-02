@@ -88,20 +88,25 @@ def fetch_course_teetimes(course, date_str):
         "page": 1
     }
     headers = {
-        "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": f"https://www.chronogolf.ca/club/{course['club_slug']}",
+        "Origin": "https://www.chronogolf.ca",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }
     
     try:
-        resp = requests.get(base_url, params=params, headers=headers, timeout=6)
+        resp = requests.get(base_url, params=params, headers=headers, timeout=8)
         if resp.status_code == 200:
             payload = resp.json()
             if isinstance(payload, dict):
                 return payload.get("teetimes", payload.get("data", []))
             elif isinstance(payload, list):
                 return payload
+        else:
+            print(f"[{course['name']}] HTTP {resp.status_code} for {date_str}")
     except Exception as e:
-        st.warning(f"Error fetching {course['name']} for {date_str}: {e}")
+        print(f"Error fetching {course['name']} for {date_str}: {e}")
     return []
 
 def get_target_weekend_dates(num_weeks=2):
