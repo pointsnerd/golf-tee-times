@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # --- Course Configuration Registry ---
 CHRONOGOLF_COURSES = [
@@ -78,7 +79,7 @@ def extract_open_spots(item):
 
     return item.get("players", 4)
 
-def fetch_course_teetimes(course, date_str):
+def fetch_course_teetimes(session, course, date_str):
     """Fetch public tee sheet for a course on a given YYYY-MM-DD date."""
     base_url = "https://www.chronogolf.com/marketplace/v2/teetimes"
     params = {
@@ -92,26 +93,32 @@ def fetch_course_teetimes(course, date_str):
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": f"https://www.chronogolf.ca/club/{course['club_slug']}",
         "Origin": "https://www.chronogolf.ca",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
     }
     
     try:
-        resp = requests.get(base_url, params=params, headers=headers, timeout=8)
-        if resp.status_code == 200:
+        resp = session.get(base_url, params=params, headers=headers, timeout=10)
+        status = resp.status_code
+        if status == 200:
             payload = resp.json()
+            items = []
             if isinstance(payload, dict):
-                return payload.get("teetimes", payload.get("data", []))
+                items = payload.get("teetimes", payload.get("data", []))
             elif isinstance(payload, list):
-                return payload
+                items = payload
+            return items, f"HTTP 200 (Found {len(items)} slots)"
         else:
-            print(f"[{course['name']}] HTTP {resp.status_code} for {date_str}")
+            return [], f"HTTP {status}"
     except Exception as e:
-        print(f"Error fetching {course['name']} for {date_str}: {e}")
-    return []
+        return [], f"Error: {e}"
 
 def get_target_weekend_dates(num_weeks=2):
-    """Calculate upcoming Friday, Saturday, and Sunday dates."""
-    today = datetime.now().date()
+    """Calculate upcoming Friday, Saturday, and Sunday dates using Calgary local time."""
+    try:
+        today = datetime.now(ZoneInfo("America/Edmonton")).date()
+    except Exception:
+        today = datetime.now().date()
+        
     target_dates = []
     for day_offset in range(num_weeks * 7):
         candidate = today + timedelta(days=day_offset)
@@ -142,13 +149,16 @@ if st.button("🔄 Refresh Data"):
 def load_all_data():
     weekend_dates = get_target_weekend_dates(num_weeks=2)
     rows = []
+    diagnostics = []
+    session = requests.Session()
 
     for course in CHRONOGOLF_COURSES:
         if course["name"] not in selected_courses:
             continue
         for date_obj in weekend_dates:
             date_str = date_obj.strftime("%Y-%m-%d")
-            raw_items = fetch_course_teetimes(course, date_str)
+            raw_items, diag_msg = fetch_course_teetimes(session, course, date_str)
+            diagnostics.append(f"{course['name']} [{date_str}]: {diag_msg}")
             
             if not isinstance(raw_items, list):
                 continue
@@ -191,10 +201,10 @@ def load_all_data():
                         "Book": booking_url,
                         "RawTime": t_val
                     })
-    return rows
+    return rows, diagnostics
 
 with st.spinner("Fetching live tee sheets..."):
-    results = load_all_data()
+    results, diag_logs = load_all_data()
 
 COLUMN_CONFIG = {
     "Course": st.column_config.TextColumn("Course", alignment="left"),
@@ -214,7 +224,6 @@ target_dates = get_target_weekend_dates(num_weeks=2)
 if results:
     df = pd.DataFrame(results)
     
-    # Overview Metric Bar
     col1, col2, col3 = st.columns(3)
     col1.metric("Morning Times Available", len(df))
     col2.metric("Courses Monitored", len(df["Course"].unique()))
@@ -222,7 +231,6 @@ if results:
 
     st.write("---")
 
-    # Group dates by week so each row displays a 3-column weekend (Fri | Sat | Sun)
     for i in range(0, len(target_dates), 3):
         weekend_slice = target_dates[i:i+3]
         cols = st.columns(3)
@@ -276,3 +284,8 @@ if results:
                             )
 else:
     st.info("No morning tee times found matching your criteria, or tee sheets are not yet open for these dates.")
+
+# Live Diagnostics Expander for Cloud Troubleshooting
+with st.expander("🛠️ API Connection Diagnostics"):
+    for log in diag_logs:
+        st.text(log)
