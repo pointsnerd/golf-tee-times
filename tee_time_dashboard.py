@@ -99,7 +99,7 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if item.get("frozen") is True or item.get("out_of_capacity") is True:
         return False, "", "", ""
 
-    # 1. Capacity resolution
+    # Capacity resolution
     valid_player_set = set()
 
     if "player_counts" in item and isinstance(item["player_counts"], list):
@@ -127,11 +127,10 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
         min_size = min(valid_player_set)
         max_size = max(valid_player_set)
 
-    # Valid if requested players fits within slot limits
     if requested_spots > max_size or requested_spots < min_size:
         return False, "", "", ""
 
-    # 2. Holes validation
+    # Holes validation
     bookable_holes = set()
     default_price = item.get("default_price", {})
     
@@ -162,7 +161,7 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if selected_round_length not in bookable_holes:
         return False, "", "", ""
 
-    # 3. Adult Public Rate with Cart Assignment
+    # Adult Public Rate with Cart Assignment
     if selected_round_length == 18:
         price_str = COURSE_RATES_18.get(club_slug, "$130.00")
     else:
@@ -197,7 +196,6 @@ def fetch_course_teetimes(session, course, date_str):
         "sec-fetch-site": "cross-site"
     }
     
-    # Retry up to 3 times on 429 rate limit
     for attempt in range(3):
         try:
             resp = session.get(
@@ -217,7 +215,6 @@ def fetch_course_teetimes(session, course, date_str):
                     items = payload
                 return items, f"HTTP 200 (Total records: {len(items)})"
             elif status == 429:
-                # Exponential backoff on rate-limiting
                 backoff = (attempt + 1) * 1.5
                 pytime.sleep(backoff)
                 continue
@@ -226,7 +223,6 @@ def fetch_course_teetimes(session, course, date_str):
         except Exception as e:
             return [], f"Error: {e}"
         finally:
-            # Pacing delay between requests to keep under the threshold
             pytime.sleep(0.08)
 
     return [], "HTTP 429 (Rate Limited after retries)"
@@ -249,21 +245,41 @@ cal_obj = calendar.Calendar(firstweekday=calendar.SUNDAY)
 month_weeks = cal_obj.monthdayscalendar(curr_year, curr_month)
 
 # --- UI Setup ---
-st.set_page_config(page_title="First Right of Refusal Golf Tee Sheet", layout="wide")
+st.set_page_config(
+    page_title="First Right of Refusal Golf Tee Sheet",
+    layout="wide",
+    initial_sidebar_state="auto"
+)
 
+# Responsive CSS: desktop gets the custom 1/3 viewport sidebar; mobile gets full-width native drawer
 st.markdown("""
 <style>
-    section[data-testid="stSidebar"] {
-        width: 32vw !important;
-        min-width: 380px !important;
-        max-width: 480px !important;
-        background-color: #0B1120;
-        border-right: 1px solid #1E293B;
+    /* Desktop-only sidebar sizing (screens >= 1024px) */
+    @media (min-width: 1024px) {
+        section[data-testid="stSidebar"] {
+            width: 32vw !important;
+            min-width: 380px !important;
+            max-width: 460px !important;
+        }
     }
-    
+
+    /* Mobile / Small Screens (screens < 1024px) */
+    @media (max-width: 1023px) {
+        section[data-testid="stSidebar"] {
+            width: 88vw !important;
+            min-width: 0 !important;
+            max-width: 100vw !important;
+        }
+    }
+
     .stApp {
         background-color: #0F172A;
         color: #F8FAFC;
+    }
+
+    section[data-testid="stSidebar"] {
+        background-color: #0B1120;
+        border-right: 1px solid #1E293B;
     }
 
     section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
@@ -302,8 +318,7 @@ with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
         st.cache_data.clear()
         st.rerun()
 
-# --- 3. Cached Raw Tee Sheet Retrieval (Decoupled from local UI filters) ---
-# Raw requests are cached independently so changing 2 vs 4 spots does NOT hammer the API
+# --- 3. Cached Raw Tee Sheet Retrieval ---
 @st.cache_data(ttl=180)
 def load_raw_teetimes(selected_course_names):
     raw_results = []
@@ -330,7 +345,7 @@ def load_raw_teetimes(selected_course_names):
 with st.spinner("Fetching live tee sheets..."):
     cached_teetimes, diag_logs = load_raw_teetimes(tuple(selected_courses))
 
-# In-memory evaluation against user filter settings (instantaneous)
+# In-memory evaluation against user filter settings
 noon = time(12, 0)
 results = []
 
@@ -385,7 +400,6 @@ if results:
     df_raw = pd.DataFrame(results)
     day_counts = df_raw["Date"].value_counts().to_dict()
 
-# Default selection: earliest future monitored date with availability, else today
 future_with_times = [
     d.strftime("%Y-%m-%d") for d in monitored_14_days 
     if day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0
@@ -479,6 +493,7 @@ if results:
 
     st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
 
+    # Responsive metrics grid
     course_cols = st.columns(len(selected_courses))
     course_counts = day_matches["Course"].value_counts() if not day_matches.empty else {}
 
