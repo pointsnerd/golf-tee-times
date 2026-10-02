@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import calendar
+import time as pytime
 from datetime import datetime, date, timedelta, time
 from zoneinfo import ZoneInfo
 from curl_cffi import requests
@@ -99,7 +100,6 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
         return False, "", "", ""
 
     # 1. Capacity resolution
-    # Collect all supported player counts across root, player_counts, and green_fee_options
     valid_player_set = set()
 
     if "player_counts" in item and isinstance(item["player_counts"], list):
@@ -121,15 +121,13 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if min_p and str(min_p).isdigit():
         valid_player_set.add(int(min_p))
 
-    # If no explicit counts found, fallback to 1-4
     if not valid_player_set:
         min_size, max_size = 1, 4
     else:
         min_size = min(valid_player_set)
         max_size = max(valid_player_set)
 
-    # Check if this tee time can accommodate AT LEAST `requested_spots` players
-    # (i.e. if looking for 2 players, the slot must support up to >= 2 players, and min_size <= 2)
+    # Valid if requested players fits within slot limits
     if requested_spots > max_size or requested_spots < min_size:
         return False, "", "", ""
 
@@ -181,7 +179,7 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     return True, spots_display, price_str, holes_display
 
 def fetch_course_teetimes(session, course, date_str):
-    """Fetch public tee sheet using Chrome TLS impersonation."""
+    """Fetch public tee sheet using Chrome TLS impersonation with rate-limit pacing and retry on 429."""
     base_url = "https://www.chronogolf.com/marketplace/v2/teetimes"
     params = {
         "start_date": date_str,
@@ -199,27 +197,39 @@ def fetch_course_teetimes(session, course, date_str):
         "sec-fetch-site": "cross-site"
     }
     
-    try:
-        resp = session.get(
-            base_url,
-            params=params,
-            headers=headers,
-            impersonate="chrome124",
-            timeout=10
-        )
-        status = resp.status_code
-        if status == 200:
-            payload = resp.json()
-            items = []
-            if isinstance(payload, dict):
-                items = payload.get("teetimes", payload.get("data", []))
-            elif isinstance(payload, list):
-                items = payload
-            return items, f"HTTP 200 (Total records: {len(items)})"
-        else:
-            return [], f"HTTP {status}"
-    except Exception as e:
-        return [], f"Error: {e}"
+    # Retry up to 3 times on 429 rate limit
+    for attempt in range(3):
+        try:
+            resp = session.get(
+                base_url,
+                params=params,
+                headers=headers,
+                impersonate="chrome124",
+                timeout=12
+            )
+            status = resp.status_code
+            if status == 200:
+                payload = resp.json()
+                items = []
+                if isinstance(payload, dict):
+                    items = payload.get("teetimes", payload.get("data", []))
+                elif isinstance(payload, list):
+                    items = payload
+                return items, f"HTTP 200 (Total records: {len(items)})"
+            elif status == 429:
+                # Exponential backoff on rate-limiting
+                backoff = (attempt + 1) * 1.5
+                pytime.sleep(backoff)
+                continue
+            else:
+                return [], f"HTTP {status}"
+        except Exception as e:
+            return [], f"Error: {e}"
+        finally:
+            # Pacing delay between requests to keep under the threshold
+            pytime.sleep(0.08)
+
+    return [], "HTTP 429 (Rate Limited after retries)"
 
 # --- Calgary Local Date Configuration ---
 try:
@@ -275,10 +285,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 1. Top of Sidebar: Calendar Placeholder
+# 1. Calendar container at the top of the sidebar
 cal_top_container = st.sidebar.container()
 
-# 2. Below Calendar: Expandable Filter Settings
+# 2. Below the calendar: Expandable Filter Settings
 with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
     min_spots = st.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=3)
     time_filter = st.radio("Tee Time", options=["AM", "PM", "All Day"], index=0)
@@ -288,75 +298,87 @@ with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
         options=[c["name"] for c in CHRONOGOLF_COURSES],
         default=[c["name"] for c in CHRONOGOLF_COURSES]
     )
-    if st.button("🔄 Refresh Data", use_container_width=True):
+    if st.button("🔄 Refresh Data (Force Clear Cache)", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-# --- 3. Data Fetching & Processing ---
-@st.cache_data(ttl=60)
-def load_all_data(requested_spots, selected_holes, selected_time_period):
-    rows = []
+# --- 3. Cached Raw Tee Sheet Retrieval (Decoupled from local UI filters) ---
+# Raw requests are cached independently so changing 2 vs 4 spots does NOT hammer the API
+@st.cache_data(ttl=180)
+def load_raw_teetimes(selected_course_names):
+    raw_results = []
     diagnostics = []
     session = requests.Session()
-    noon = time(12, 0)
 
     for course in CHRONOGOLF_COURSES:
-        if course["name"] not in selected_courses:
+        if course["name"] not in selected_course_names:
             continue
         for date_obj in monitored_14_days:
             date_str = date_obj.strftime("%Y-%m-%d")
             raw_items, diag_msg = fetch_course_teetimes(session, course, date_str)
             diagnostics.append(f"{course['name']} [{date_str}]: {diag_msg}")
             
-            if not isinstance(raw_items, list):
-                continue
-
-            seen_times = set()
-
-            for item in raw_items:
-                if not isinstance(item, dict):
-                    continue
-
-                t_val = parse_slot_time(item)
-                if not t_val:
-                    continue
-
-                if selected_time_period == "AM" and t_val >= noon:
-                    continue
-                elif selected_time_period == "PM" and t_val < noon:
-                    continue
-
-                is_valid, spots_display, price_str, holes_display = evaluate_chronogolf_slot(
-                    item, requested_spots, selected_holes, course["club_slug"]
-                )
-                
-                if not is_valid:
-                    continue
-
-                time_key = (course["name"], date_str, t_val.strftime("%H:%M"))
-                if time_key in seen_times:
-                    continue
-                seen_times.add(time_key)
-
-                booking_url = f"https://www.chronogolf.ca/club/{course['club_slug']}#?date={date_str}"
-
-                rows.append({
-                    "Course": course["name"],
-                    "ShortCourse": course["short_name"],
-                    "Date": date_str,
-                    "DateObj": date_obj,
-                    "Day": date_obj.strftime("%A"),
-                    "Time": t_val.strftime("%I:%M %p"),
-                    "Open Spots": spots_display,
-                    "Price (Adult w/ Cart)": price_str,
-                    "Holes": holes_display,
-                    "Book": booking_url,
-                    "RawTime": t_val
+            if isinstance(raw_items, list) and raw_items:
+                raw_results.append({
+                    "course": course,
+                    "date_str": date_str,
+                    "date_obj": date_obj,
+                    "items": raw_items
                 })
-    return rows, diagnostics
+    return raw_results, diagnostics
 
 with st.spinner("Fetching live tee sheets..."):
-    results, diag_logs = load_all_data(min_spots, round_length, time_filter)
+    cached_teetimes, diag_logs = load_raw_teetimes(tuple(selected_courses))
+
+# In-memory evaluation against user filter settings (instantaneous)
+noon = time(12, 0)
+results = []
+
+for block in cached_teetimes:
+    course = block["course"]
+    date_str = block["date_str"]
+    date_obj = block["date_obj"]
+    raw_items = block["items"]
+    seen_times = set()
+
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+
+        t_val = parse_slot_time(item)
+        if not t_val:
+            continue
+
+        if time_filter == "AM" and t_val >= noon:
+            continue
+        elif time_filter == "PM" and t_val < noon:
+            continue
+
+        is_valid, spots_display, price_str, holes_display = evaluate_chronogolf_slot(
+            item, min_spots, round_length, course["club_slug"]
+        )
+        if not is_valid:
+            continue
+
+        time_key = (course["name"], date_str, t_val.strftime("%H:%M"))
+        if time_key in seen_times:
+            continue
+        seen_times.add(time_key)
+
+        booking_url = f"https://www.chronogolf.ca/club/{course['club_slug']}#?date={date_str}"
+        results.append({
+            "Course": course["name"],
+            "ShortCourse": course["short_name"],
+            "Date": date_str,
+            "DateObj": date_obj,
+            "Day": date_obj.strftime("%A"),
+            "Time": t_val.strftime("%I:%M %p"),
+            "Open Spots": spots_display,
+            "Price (Adult w/ Cart)": price_str,
+            "Holes": holes_display,
+            "Book": booking_url,
+            "RawTime": t_val
+        })
 
 day_counts = {}
 if results:
@@ -373,7 +395,7 @@ default_selected = future_with_times[0] if future_with_times else calgary_today.
 if "active_calendar_date" not in st.session_state:
     st.session_state["active_calendar_date"] = default_selected
 
-# --- Sidebar: Calendar Render ---
+# --- Render Calendar at Top of Sidebar ---
 with cal_top_container:
     st.markdown(f"### 📅 {month_title}")
     
