@@ -59,61 +59,84 @@ CHRONOGOLF_COURSES = [
 
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
 
+def extract_price(item):
+    """Safely inspects all possible price fields in Chronogolf schemas."""
+    # 1. Direct top-level fields
+    for key in ["green_fee", "price", "rate", "cost"]:
+        val = item.get(key)
+        if isinstance(val, (int, float)) and val > 0:
+            return f"${val / 100:.2f}" if val > 500 else f"${val:.2f}"
+
+    # 2. Inspect green_fee_options list
+    options = item.get("green_fee_options", [])
+    if isinstance(options, list):
+        for opt in options:
+            if isinstance(opt, dict):
+                for k in ["price", "rate", "cost", "green_fee"]:
+                    val = opt.get(k)
+                    if isinstance(val, (int, float)) and val > 0:
+                        return f"${val / 100:.2f}" if val > 500 else f"${val:.2f}"
+
+    # 3. Inspect rates/pricing sub-objects
+    for container_key in ["rates", "pricing"]:
+        container = item.get(container_key)
+        if isinstance(container, list):
+            for entry in container:
+                if isinstance(entry, dict):
+                    val = entry.get("price") or entry.get("rate")
+                    if isinstance(val, (int, float)) and val > 0:
+                        return f"${val / 100:.2f}" if val > 500 else f"${val:.2f}"
+    return "Check Club"
+
 def parse_slot_details(item):
     """
-    Validates if a tee time is genuinely bookable for visitors.
-    Returns (open_spots, price_str) or (0, None) if not available.
+    Validates if a tee time is genuinely open.
+    Returns (open_spots, price_str) or (0, None).
     """
     # 1. Immediately drop explicitly blocked or sold out intervals
     if item.get("out_of_capacity") is True or item.get("sold_out") is True or item.get("status") == "booked":
         return 0, None
 
-    # 2. Check green fee options (Visitor rates)
-    options = item.get("green_fee_options", [])
-    if not options or not isinstance(options, list) or len(options) == 0:
+    # 2. Drop member-only or internal blocked records
+    if item.get("public") is False or item.get("is_member_only") is True:
         return 0, None
 
-    valid_rates = []
-    available_player_counts = set()
+    # 3. Determine open spots
+    open_spots = 0
 
-    for opt in options:
-        if not isinstance(opt, dict):
-            continue
-        
-        # Check price
-        rate = opt.get("rate") or opt.get("price") or opt.get("green_fee") or 0
-        if isinstance(rate, (int, float)) and rate > 0:
-            valid_rates.append(rate)
-            
-            # Check player capacity on this specific rate
-            if "player_counts" in opt and isinstance(opt["player_counts"], list):
-                for p in opt["player_counts"]:
-                    if str(p).isdigit() and int(p) > 0:
-                        available_player_counts.add(int(p))
-            elif "player_count" in opt and opt["player_count"]:
-                available_player_counts.add(int(opt["player_count"]))
-
-    # If no rates have a price > 0, it's a member block or unreleased slot
-    if not valid_rates:
-        return 0, None
-
-    # Calculate actual spots open
-    if available_player_counts:
-        open_spots = max(available_player_counts)
-    elif "available_spots" in item and item["available_spots"] is not None:
+    if "available_spots" in item and item["available_spots"] is not None:
         open_spots = int(item["available_spots"])
+    elif "open_slots" in item and item["open_slots"] is not None:
+        open_spots = int(item["open_slots"])
     elif "player_counts" in item and isinstance(item["player_counts"], list):
-        open_spots = max([int(p) for p in item["player_counts"] if str(p).isdigit()] or [0])
-    else:
-        open_spots = 0
+        valid = [int(p) for p in item["player_counts"] if str(p).isdigit()]
+        if valid:
+            open_spots = max(valid)
+
+    # 4. Check green_fee_options if still 0
+    if open_spots == 0:
+        options = item.get("green_fee_options", [])
+        if isinstance(options, list):
+            counts = []
+            for opt in options:
+                if isinstance(opt, dict):
+                    if "player_count" in opt and str(opt["player_count"]).isdigit():
+                        counts.append(int(opt["player_count"]))
+                    elif "player_counts" in opt and isinstance(opt["player_counts"], list):
+                        counts.extend([int(c) for c in opt["player_counts"] if str(c).isdigit()])
+            if counts:
+                open_spots = max(counts)
+
+    # 5. Fallback to capacity minus booked players
+    if open_spots == 0:
+        max_cap = item.get("max_player_count") or item.get("max_players") or 4
+        booked = len(item.get("booked_players", [])) if isinstance(item.get("booked_players"), list) else 0
+        open_spots = max(0, max_cap - booked)
 
     if open_spots == 0:
         return 0, None
 
-    # Format lowest available price
-    min_rate = min(valid_rates)
-    price_str = f"${min_rate / 100:.2f}" if min_rate > 500 else f"${min_rate:.2f}"
-
+    price_str = extract_price(item)
     return open_spots, price_str
 
 def parse_local_time(time_str):
@@ -121,8 +144,8 @@ def parse_local_time(time_str):
     if not time_str:
         return None, None
     try:
-        if "T" in time_str:
-            clean_str = time_str.replace("Z", "+00:00")
+        if "T" in str(time_str):
+            clean_str = str(time_str).replace("Z", "+00:00")
             dt = datetime.fromisoformat(clean_str)
             if dt.tzinfo is not None:
                 local_dt = dt.astimezone(ZoneInfo("America/Edmonton"))
@@ -247,7 +270,6 @@ def load_all_data():
                 if t_val <= max_time:
                     open_spots, price_str = parse_slot_details(item)
                     
-                    # Strictly drop non-bookable slots or slots below threshold
                     if open_spots < min_spots or price_str is None:
                         continue
 
