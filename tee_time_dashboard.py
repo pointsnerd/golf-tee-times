@@ -266,8 +266,10 @@ st.markdown("""
 
 calendar_dates, today_date = get_sunday_start_calendar_dates(num_weeks=5)
 
-# --- Sidebar: Expandable Filters (Below Calendar Conceptually) ---
-# We retrieve filter selections using an expander in the sidebar
+# --- 1. Top of Sidebar: Calendar Placeholder ---
+cal_top_container = st.sidebar.container()
+
+# --- 2. Below Calendar: Expandable Filter Settings ---
 with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
     # 1. Minimum Open Spots (defaults as 4)
     min_spots = st.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=3)
@@ -285,7 +287,7 @@ with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
         st.cache_data.clear()
         st.rerun()
 
-# --- Data Fetching & Processing ---
+# --- 3. Data Fetching & Processing ---
 @st.cache_data(ttl=60)
 def load_all_data(requested_spots, selected_holes, selected_time_period):
     rows = []
@@ -359,7 +361,7 @@ if results:
     df_raw = pd.DataFrame(results)
     day_counts = df_raw["Date"].value_counts().to_dict()
 
-# Default to first future date that has times, or today
+# Default to first future date with availability or today
 future_with_times = [
     d.strftime("%Y-%m-%d") for d in calendar_dates 
     if d >= today_date and day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0
@@ -369,11 +371,8 @@ default_selected = future_with_times[0] if future_with_times else today_date.str
 if "active_calendar_date" not in st.session_state:
     st.session_state["active_calendar_date"] = default_selected
 
-# --- Sidebar: Calendar at Top ---
-# We inject calendar above the expander using an empty placeholder container
-sidebar_cal_container = st.sidebar.container()
-
-with sidebar_cal_container:
+# --- Populate Calendar at Top of Sidebar ---
+with cal_top_container:
     st.markdown("### 📅 Select Day (5 Weeks)")
     
     cal_head_cols = st.columns(7)
@@ -418,10 +417,9 @@ with sidebar_cal_container:
                         st.session_state["active_calendar_date"] = d_str
                         st.rerun()
 
-    st.caption("🟢 Green/Primary indicates active day. Disabled days have no tee times or are in the past.")
     st.write("---")
 
-# --- Main Page: Tee Time Inspector ---
+# --- 4. Main Page: Tee Time Inspector ---
 st.title("⛳ First Right of Refusal Golf Tee Sheet")
 
 COLUMN_CONFIG = {
