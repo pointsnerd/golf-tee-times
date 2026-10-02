@@ -10,7 +10,8 @@ CHRONOGOLF_COURSES = [
         "name": "D'Arcy Ranch Golf Club",
         "club_slug": "d-arcy-ranch-golf-club",
         "ids": ["da3eb64e-8ff4-4a43-9958-2e36f108ce4e", "5a18dff5-d436-4574-b25f-75ad6fd82bd1"],
-        "default_18_rate": "$100.00",
+        "rate_18_cart": "$100.00",
+        "rate_9_cart": "$55.00",
         "color": "#1E3A8A"  # Deep Blue
     },
     {
@@ -21,26 +22,44 @@ CHRONOGOLF_COURSES = [
             "fcad2564-a611-4137-9c38-1d02abe77b78", "c4924955-d232-4d52-bd90-6ba5eeea88d1",
             "04beb0e0-6718-47a5-8a47-7e5aa076505b", "457a26d8-1924-48c0-936b-d19af99e3bcd"
         ],
-        "default_18_rate": "$180.00",
+        "rate_18_cart": "$180.00",
+        "rate_9_cart": "$95.00",
         "color": "#9A3412"  # Rust Amber
     },
     {
         "name": "Sundre Golf Club",
         "club_slug": "sundre-golf-club",
         "ids": ["804f0be1-3772-4dcb-bf8a-540dd4727ba0"],
-        "default_18_rate": "$109.00",
+        "rate_18_cart": "$109.00",
+        "rate_9_cart": "$65.00",
         "color": "#581C87"  # Deep Purple
     },
     {
         "name": "Sirocco Golf Club",
         "club_slug": "sirocco-golf-club",
         "ids": ["eb90994d-d150-4234-b0c3-67c239a78cf3"],
-        "default_18_rate": "$115.00",
+        "rate_18_cart": "$157.50",
+        "rate_9_cart": "$85.00",
         "color": "#9D174D"  # Berry Rose
     }
 ]
 
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
+
+# Static lookup for 18-hole and 9-hole Adult with Cart pricing
+COURSE_RATES_18 = {
+    "d-arcy-ranch-golf-club": "$100.00",
+    "river-spirit-golf-club": "$180.00",
+    "sundre-golf-club": "$109.00",
+    "sirocco-golf-club": "$157.50"
+}
+
+COURSE_RATES_9 = {
+    "d-arcy-ranch-golf-club": "$55.00",
+    "river-spirit-golf-club": "$95.00",
+    "sundre-golf-club": "$65.00",
+    "sirocco-golf-club": "$85.00"
+}
 
 def parse_slot_time(item):
     """Extract local tee time."""
@@ -67,7 +86,7 @@ def parse_slot_time(item):
             pass
     return None
 
-def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, course_info):
+def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_slug):
     """
     Evaluates bookability using Chronogolf's default_price, player limits, and selected round length (18 or 9).
     Returns (is_valid, spots_display, price_str, holes_display)
@@ -134,21 +153,11 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, cours
     if selected_round_length not in bookable_holes:
         return False, "", "", ""
 
-    # 3. Adult Public Rate with Cart Resolution
-    if course_info["name"] == "River Spirit Golf Club":
-        # Full public 18 holes checkout total is $180.00
-        price_str = "$180.00"
-    elif course_info["name"] == "Sundre Golf Club":
-        price_str = "$109.00"
-    elif course_info["name"] == "D'Arcy Ranch Golf Club":
-        price_str = "$100.00"
+    # 3. Adult Public Rate with Cart Assignment
+    if selected_round_length == 18:
+        price_str = COURSE_RATES_18.get(club_slug, "$100.00")
     else:
-        # Fallback to default_price or course standard
-        subtotal = default_price.get("subtotal") or default_price.get("green_fee")
-        if subtotal and subtotal > 0:
-            price_str = f"${subtotal:.2f}"
-        else:
-            price_str = course_info.get("default_18_rate", "$100.00")
+        price_str = COURSE_RATES_9.get(club_slug, "$55.00")
 
     if 9 in bookable_holes and 18 in bookable_holes:
         holes_display = "9 / 18"
@@ -221,7 +230,7 @@ st.title("⛳ First Right of Refusal Golf Tee Sheet")
 
 # Sidebar Controls
 st.sidebar.header("Filter Settings")
-time_filter = st.sidebar.radio("Tee Time", options=["AM", "PM"], index=0)
+time_filter = st.sidebar.radio("Tee Time", options=["AM", "PM", "All Day"], index=0)
 min_spots = st.sidebar.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=0)
 round_length = st.sidebar.radio("Round Length", options=[18, 9], index=0)
 
@@ -265,13 +274,14 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
                 if not t_val:
                     continue
 
+                # Handle AM, PM, and All Day
                 if selected_time_period == "AM" and t_val >= noon:
                     continue
                 elif selected_time_period == "PM" and t_val < noon:
                     continue
 
                 is_valid, spots_display, price_str, holes_display = evaluate_chronogolf_slot(
-                    item, requested_spots, selected_holes, course
+                    item, requested_spots, selected_holes, course["club_slug"]
                 )
                 
                 if not is_valid:
@@ -320,7 +330,8 @@ if results:
     df = pd.DataFrame(results)
     
     col1, col2, col3 = st.columns(3)
-    col1.metric(f"{time_filter} Times Available", len(df))
+    metric_label = f"{time_filter} Times Available" if time_filter != "All Day" else "Total Times Available"
+    col1.metric(metric_label, len(df))
     col2.metric("Courses Monitored", len(df["Course"].unique()))
     col3.metric("Dates Tracked", len(target_dates))
 
@@ -341,7 +352,8 @@ if results:
                     st.subheader(formatted_date_header)
                     
                     if day_matches.empty:
-                        st.caption(f"No {time_filter} times open.")
+                        empty_label = f"No {time_filter} times open." if time_filter != "All Day" else "No times open."
+                        st.caption(empty_label)
                     else:
                         course_counts = day_matches["Course"].value_counts()
                         
@@ -378,7 +390,8 @@ if results:
                                 hide_index=True
                             )
 else:
-    st.info(f"No {time_filter} tee times found matching your criteria, or tee sheets are not yet open for these dates.")
+    no_results_label = f"No {time_filter} tee times found matching your criteria, or tee sheets are not yet open for these dates." if time_filter != "All Day" else "No tee times found matching your criteria, or tee sheets are not yet open for these dates."
+    st.info(no_results_label)
 
 with st.expander("🛠 API Connection Diagnostics"):
     for log in diag_logs:
