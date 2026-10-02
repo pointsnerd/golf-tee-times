@@ -46,7 +46,6 @@ CHRONOGOLF_COURSES = [
 
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
 
-# Static verified 18-hole and 9-hole Adult with Cart pricing
 COURSE_RATES_18 = {
     "d-arcy-ranch-golf-club": "$130.00",
     "river-spirit-golf-club": "$180.00",
@@ -94,7 +93,6 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if item.get("frozen") is True or item.get("out_of_capacity") is True:
         return False, "", "", ""
 
-    # 1. Capacity resolution
     max_size = item.get("max_player_size")
     min_size = item.get("min_player_size", 1)
 
@@ -122,7 +120,6 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if max_size < requested_spots:
         return False, "", "", ""
 
-    # 2. Holes validation
     bookable_holes = set()
     default_price = item.get("default_price", {})
     
@@ -153,7 +150,6 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if selected_round_length not in bookable_holes:
         return False, "", "", ""
 
-    # 3. Adult Public Rate with Cart Assignment
     if selected_round_length == 18:
         price_str = COURSE_RATES_18.get(club_slug, "$130.00")
     else:
@@ -210,19 +206,14 @@ def fetch_course_teetimes(session, course, date_str):
     except Exception as e:
         return [], f"Error: {e}"
 
-def get_target_weekend_dates(num_weeks=2):
-    """Calculate upcoming Friday, Saturday, and Sunday dates using Calgary local time."""
+def get_target_dates(num_days=14):
+    """Generate upcoming dates for all days of the week starting today."""
     try:
         today = datetime.now(ZoneInfo("America/Edmonton")).date()
     except Exception:
         today = datetime.now().date()
         
-    target_dates = []
-    for day_offset in range(num_weeks * 7):
-        candidate = today + timedelta(days=day_offset)
-        if candidate.weekday() in [4, 5, 6]:
-            target_dates.append(candidate)
-    return target_dates
+    return [today + timedelta(days=offset) for offset in range(num_days)]
 
 # --- UI Setup ---
 st.set_page_config(page_title="First Right of Refusal Golf Tee Sheet", layout="wide")
@@ -247,7 +238,7 @@ if st.button("🔄 Refresh Data (Force Clear Cache)"):
 # --- Data Fetching & Processing ---
 @st.cache_data(ttl=60)
 def load_all_data(requested_spots, selected_holes, selected_time_period):
-    weekend_dates = get_target_weekend_dates(num_weeks=2)
+    target_dates = get_target_dates(num_days=14)
     rows = []
     diagnostics = []
     session = requests.Session()
@@ -256,7 +247,7 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
     for course in CHRONOGOLF_COURSES:
         if course["name"] not in selected_courses:
             continue
-        for date_obj in weekend_dates:
+        for date_obj in target_dates:
             date_str = date_obj.strftime("%Y-%m-%d")
             raw_items, diag_msg = fetch_course_teetimes(session, course, date_str)
             diagnostics.append(f"{course['name']} [{date_str}]: {diag_msg}")
@@ -323,7 +314,7 @@ def color_courses(val):
     color = COURSE_COLOR_MAP.get(val, "#374151")
     return f"background-color: {color}; color: white; font-weight: bold; border-radius: 4px; padding: 3px 6px;"
 
-target_dates = get_target_weekend_dates(num_weeks=2)
+target_dates = get_target_dates(num_days=14)
 
 if results:
     df = pd.DataFrame(results)
@@ -332,15 +323,16 @@ if results:
     metric_label = f"{time_filter} Times Available" if time_filter != "All Day" else "Total Times Available"
     col1.metric(metric_label, len(df))
     col2.metric("Courses Monitored", len(df["Course"].unique()))
-    col3.metric("Dates Tracked", len(target_dates))
+    col3.metric("Days Tracked", len(target_dates))
 
     st.write("---")
 
+    # Render days in responsive blocks of 3 columns
     for i in range(0, len(target_dates), 3):
-        weekend_slice = target_dates[i:i+3]
-        cols = st.columns(3)
+        day_slice = target_dates[i:i+3]
+        cols = st.columns(len(day_slice))
         
-        for idx, date_obj in enumerate(weekend_slice):
+        for idx, date_obj in enumerate(day_slice):
             date_str = date_obj.strftime("%Y-%m-%d")
             formatted_date_header = date_obj.strftime("%A, %B %d")
             
