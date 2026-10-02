@@ -1,8 +1,8 @@
 import streamlit as st
-import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from curl_cffi import requests
 
 # --- Course Configuration Registry ---
 CHRONOGOLF_COURSES = [
@@ -80,24 +80,32 @@ def extract_open_spots(item):
     return item.get("players", 4)
 
 def fetch_course_teetimes(session, course, date_str):
-    """Fetch public tee sheet for a course on a given YYYY-MM-DD date."""
+    """Fetch public tee sheet for a course on a given date using Chrome TLS impersonation."""
     base_url = "https://www.chronogolf.com/marketplace/v2/teetimes"
     params = {
         "start_date": date_str,
         "course_ids": ",".join(course["ids"]),
         "holes": course["holes"],
-        "page": 1
+        "page": "1"
     }
     headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": f"https://www.chronogolf.ca/club/{course['club_slug']}",
-        "Origin": "https://www.chronogolf.ca",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9",
+        "referer": f"https://www.chronogolf.ca/club/{course['club_slug']}",
+        "origin": "https://www.chronogolf.ca",
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "cross-site"
     }
     
     try:
-        resp = session.get(base_url, params=params, headers=headers, timeout=10)
+        resp = session.get(
+            base_url,
+            params=params,
+            headers=headers,
+            impersonate="chrome124",
+            timeout=10
+        )
         status = resp.status_code
         if status == 200:
             payload = resp.json()
@@ -113,7 +121,7 @@ def fetch_course_teetimes(session, course, date_str):
         return [], f"Error: {e}"
 
 def get_target_weekend_dates(num_weeks=2):
-    """Calculate upcoming Friday, Saturday, and Sunday dates using Calgary local time."""
+    """Calculate upcoming Friday, Saturday, and Sunday dates using local Calgary time."""
     try:
         today = datetime.now(ZoneInfo("America/Edmonton")).date()
     except Exception:
@@ -150,6 +158,8 @@ def load_all_data():
     weekend_dates = get_target_weekend_dates(num_weeks=2)
     rows = []
     diagnostics = []
+    
+    # Establish TLS-impersonating session
     session = requests.Session()
 
     for course in CHRONOGOLF_COURSES:
@@ -285,7 +295,6 @@ if results:
 else:
     st.info("No morning tee times found matching your criteria, or tee sheets are not yet open for these dates.")
 
-# Live Diagnostics Expander for Cloud Troubleshooting
-with st.expander("🛠️ API Connection Diagnostics"):
+with st.expander("🛠️️ API Connection Diagnostics"):
     for log in diag_logs:
         st.text(log)
