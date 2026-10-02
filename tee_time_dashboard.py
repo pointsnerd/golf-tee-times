@@ -59,50 +59,68 @@ CHRONOGOLF_COURSES = [
 
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
 
-def extract_open_spots(item):
-    """Accurately extracts open player spots."""
+def parse_slot_details(item):
+    """
+    Validates if a tee time is genuinely bookable for visitors.
+    Returns (open_spots, price_str) or (0, None) if not available.
+    """
+    # 1. Immediately drop explicitly blocked or sold out intervals
     if item.get("out_of_capacity") is True or item.get("sold_out") is True or item.get("status") == "booked":
-        return 0
+        return 0, None
 
-    # Explicit spot numbers
-    if "available_spots" in item and item["available_spots"] is not None:
-        return int(item["available_spots"])
-    if "open_slots" in item and item["open_slots"] is not None:
-        return int(item["open_slots"])
-
-    # Player counts array
-    if "player_counts" in item and isinstance(item["player_counts"], list):
-        valid = [int(p) for p in item["player_counts"] if str(p).isdigit()]
-        if valid:
-            return max(valid)
-
-    # Green fee options checking
+    # 2. Check green fee options (Visitor rates)
     options = item.get("green_fee_options", [])
-    if options and isinstance(options, list):
-        counts = []
-        for opt in options:
-            if isinstance(opt, dict):
-                if "player_count" in opt:
-                    counts.append(int(opt["player_count"]))
-                elif "player_counts" in opt and isinstance(opt["player_counts"], list):
-                    counts.extend([int(c) for c in opt["player_counts"] if str(c).isdigit()])
-        if counts:
-            return max(counts)
+    if not options or not isinstance(options, list) or len(options) == 0:
+        return 0, None
 
-    # Max player count minus booked players
-    max_cap = item.get("max_player_count") or item.get("max_players") or 4
-    if "booked_players" in item and isinstance(item["booked_players"], list):
-        return max(0, max_cap - len(item["booked_players"]))
+    valid_rates = []
+    available_player_counts = set()
 
-    # Default to 1 if item exists without sold out flag
-    return 1
+    for opt in options:
+        if not isinstance(opt, dict):
+            continue
+        
+        # Check price
+        rate = opt.get("rate") or opt.get("price") or opt.get("green_fee") or 0
+        if isinstance(rate, (int, float)) and rate > 0:
+            valid_rates.append(rate)
+            
+            # Check player capacity on this specific rate
+            if "player_counts" in opt and isinstance(opt["player_counts"], list):
+                for p in opt["player_counts"]:
+                    if str(p).isdigit() and int(p) > 0:
+                        available_player_counts.add(int(p))
+            elif "player_count" in opt and opt["player_count"]:
+                available_player_counts.add(int(opt["player_count"]))
+
+    # If no rates have a price > 0, it's a member block or unreleased slot
+    if not valid_rates:
+        return 0, None
+
+    # Calculate actual spots open
+    if available_player_counts:
+        open_spots = max(available_player_counts)
+    elif "available_spots" in item and item["available_spots"] is not None:
+        open_spots = int(item["available_spots"])
+    elif "player_counts" in item and isinstance(item["player_counts"], list):
+        open_spots = max([int(p) for p in item["player_counts"] if str(p).isdigit()] or [0])
+    else:
+        open_spots = 0
+
+    if open_spots == 0:
+        return 0, None
+
+    # Format lowest available price
+    min_rate = min(valid_rates)
+    price_str = f"${min_rate / 100:.2f}" if min_rate > 500 else f"${min_rate:.2f}"
+
+    return open_spots, price_str
 
 def parse_local_time(time_str):
     """Converts Chronogolf time (often UTC ISO string) to Calgary Local Time."""
     if not time_str:
-        return None
+        return None, None
     try:
-        # Handle ISO strings with Z or UTC offsets
         if "T" in time_str:
             clean_str = time_str.replace("Z", "+00:00")
             dt = datetime.fromisoformat(clean_str)
@@ -221,16 +239,16 @@ def load_all_data():
                 if not t_val:
                     continue
 
-                # Ensure date matches if UTC conversion crossed midnight
                 target_date_str = parsed_date.strftime("%Y-%m-%d") if parsed_date else date_str
                 if target_date_str != date_str:
                     continue
                 
                 # Check morning window cutoff
                 if t_val <= max_time:
-                    open_spots = extract_open_spots(item)
+                    open_spots, price_str = parse_slot_details(item)
                     
-                    if open_spots < min_spots:
+                    # Strictly drop non-bookable slots or slots below threshold
+                    if open_spots < min_spots or price_str is None:
                         continue
 
                     time_key = (course["name"], date_str, t_val.strftime("%H:%M"))
@@ -238,8 +256,6 @@ def load_all_data():
                         continue
                     seen_times.add(time_key)
 
-                    green_fee = item.get("green_fee") or item.get("price") or 0
-                    price_str = f"${green_fee / 100:.2f}" if isinstance(green_fee, (int, float)) and green_fee > 500 else f"${green_fee}"
                     booking_url = f"https://www.chronogolf.ca/club/{course['club_slug']}#?date={date_str}"
 
                     rows.append({
