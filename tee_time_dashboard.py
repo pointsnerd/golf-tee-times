@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
-import calendar
-from datetime import datetime, date, time
+from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 from curl_cffi import requests
 
@@ -211,114 +210,85 @@ def fetch_course_teetimes(session, course, date_str):
     except Exception as e:
         return [], f"Error: {e}"
 
-# --- Local Calgary Time Initialization ---
-try:
-    calgary_today = datetime.now(ZoneInfo("America/Edmonton")).date()
-except Exception:
-    calgary_today = datetime.now().date()
-
-# State initialization for current displayed month and selected date
-if "view_year" not in st.session_state:
-    st.session_state["view_year"] = calgary_today.year
-if "view_month" not in st.session_state:
-    st.session_state["view_month"] = calgary_today.month
-if "active_calendar_date" not in st.session_state:
-    st.session_state["active_calendar_date"] = calgary_today.strftime("%Y-%m-%d")
-
-# Month navigation functions
-def prev_month():
-    if st.session_state["view_month"] == 1:
-        st.session_state["view_month"] = 12
-        st.session_state["view_year"] -= 1
-    else:
-        st.session_state["view_month"] -= 1
-
-def next_month():
-    if st.session_state["view_month"] == 12:
-        st.session_state["view_month"] = 1
-        st.session_state["view_year"] += 1
-    else:
-        st.session_state["view_month"] += 1
+def get_sunday_start_calendar_dates(num_weeks=5):
+    """
+    Builds a calendar grid where Sunday starts each week.
+    Finds the most recent Sunday relative to today, then builds num_weeks consecutive 7-day rows.
+    """
+    try:
+        today = datetime.now(ZoneInfo("America/Edmonton")).date()
+    except Exception:
+        today = datetime.now().date()
+        
+    days_since_sunday = (today.weekday() + 1) % 7
+    start_sunday = today - timedelta(days=days_since_sunday)
+    
+    calendar_dates = [start_sunday + timedelta(days=i) for i in range(num_weeks * 7)]
+    return calendar_dates, today
 
 # --- UI Setup ---
 st.set_page_config(page_title="First Right of Refusal Golf Tee Sheet", layout="wide")
 
 st.markdown("""
 <style>
+    /* Widen sidebar to take approximately 1/3 of screen */
+    section[data-testid="stSidebar"] {
+        width: 32vw !important;
+        min-width: 380px !important;
+        max-width: 480px !important;
+        background-color: #0B1120;
+        border-right: 1px solid #1E293B;
+    }
+    
+    /* Main body background */
     .stApp {
         background-color: #0F172A;
         color: #F8FAFC;
     }
-    div[data-testid="stHorizontalBlock"] {
-        gap: 0.25rem !important;
+
+    /* Tighten spacing between calendar columns */
+    section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
+        gap: 0.15rem !important;
     }
-    div[data-testid="stButton"] button {
+
+    /* Miniature calendar day buttons */
+    section[data-testid="stSidebar"] div[data-testid="stButton"] button {
         width: 100% !important;
-        padding: 5px 2px !important;
-        min-height: 44px !important;
-        font-size: 13px !important;
+        padding: 4px 1px !important;
+        min-height: 38px !important;
+        font-size: 11px !important;
         line-height: 1.15 !important;
         border-radius: 6px !important;
     }
+
+    /* Table typography */
     div[data-testid="stDataFrame"] td {
         font-size: 13.5px;
     }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⛳ First Right of Refusal Golf Tee Sheet")
+# Sidebar Filter Controls
+st.sidebar.markdown("### ⚙️ Filter Settings")
+time_filter = st.sidebar.radio("Tee Time", options=["AM", "PM", "All Day"], index=0)
+min_spots = st.sidebar.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=0)
+round_length = st.sidebar.radio("Round Length", options=[18, 9], index=0)
 
-# --- Top Calendar Grid ---
-view_year = st.session_state["view_year"]
-view_month = st.session_state["view_month"]
-month_label = f"{calendar.month_name[view_month]} {view_year}"
+selected_courses = st.sidebar.multiselect(
+    "Select Courses",
+    options=[c["name"] for c in CHRONOGOLF_COURSES],
+    default=[c["name"] for c in CHRONOGOLF_COURSES]
+)
 
-nav_col1, nav_col2, nav_col3 = st.columns([1, 4, 1])
-with nav_col1:
-    st.button("◀ Previous Month", on_click=prev_month, use_container_width=True)
-with nav_col2:
-    st.markdown(f"<h3 style='text-align: center; margin: 0; color: #F8FAFC;'>{month_label}</h3>", unsafe_allow_html=True)
-with nav_col3:
-    st.button("Next Month ▶", on_click=next_month, use_container_width=True)
-
-# Build calendar matrix with Sunday starting the week (calendar.SUNDAY = 6)
-cal_obj = calendar.Calendar(firstweekday=calendar.SUNDAY)
-month_days = cal_obj.monthdayscalendar(view_year, view_month)
-
-# Pre-fetch list of dates in this month from today onwards
-dates_to_query = []
-for week in month_days:
-    for day_num in week:
-        if day_num != 0:
-            d_candidate = date(view_year, view_month, day_num)
-            if d_candidate >= calgary_today:
-                dates_to_query.append(d_candidate)
-
-# --- Filters Section (Positioned Directly Below Calendar) ---
-st.write("---")
-st.markdown("#### ⚙️ Filters")
-f_col1, f_col2, f_col3, f_col4 = st.columns([1.5, 1.5, 2, 4])
-
-with f_col1:
-    time_filter = st.radio("Tee Time", options=["AM", "PM", "All Day"], index=0, horizontal=True)
-with f_col2:
-    round_length = st.radio("Round Length", options=[18, 9], index=0, horizontal=True)
-with f_col3:
-    min_spots = st.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=0)
-with f_col4:
-    selected_courses = st.multiselect(
-        "Select Courses",
-        options=[c["name"] for c in CHRONOGOLF_COURSES],
-        default=[c["name"] for c in CHRONOGOLF_COURSES]
-    )
-
-if st.button("🔄 Refresh Live Data (Clear Cache)"):
+if st.sidebar.button("🔄 Refresh Data", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
+calendar_dates, today_date = get_sunday_start_calendar_dates(num_weeks=5)
+
 # --- Data Fetching & Processing ---
 @st.cache_data(ttl=60)
-def load_all_data(requested_spots, selected_holes, selected_time_period, query_dates_str):
+def load_all_data(requested_spots, selected_holes, selected_time_period):
     rows = []
     diagnostics = []
     session = requests.Session()
@@ -327,8 +297,11 @@ def load_all_data(requested_spots, selected_holes, selected_time_period, query_d
     for course in CHRONOGOLF_COURSES:
         if course["name"] not in selected_courses:
             continue
-        for date_str in query_dates_str:
-            date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+        for date_obj in calendar_dates:
+            if date_obj < today_date:
+                continue
+                
+            date_str = date_obj.strftime("%Y-%m-%d")
             raw_items, diag_msg = fetch_course_teetimes(session, course, date_str)
             diagnostics.append(f"{course['name']} [{date_str}]: {diag_msg}")
             
@@ -379,56 +352,76 @@ def load_all_data(requested_spots, selected_holes, selected_time_period, query_d
                 })
     return rows, diagnostics
 
-query_dates_str = [d.strftime("%Y-%m-%d") for d in dates_to_query]
+with st.spinner("Fetching live tee sheets..."):
+    results, diag_logs = load_all_data(min_spots, round_length, time_filter)
 
-with st.spinner("Fetching live tee sheets for month..."):
-    results, diag_logs = load_all_data(min_spots, round_length, time_filter, query_dates_str)
+# Sidebar Calendar Construction (5 Weeks)
+st.sidebar.write("---")
+st.sidebar.markdown("### 📅 Select Day (5 Weeks)")
 
 day_counts = {}
 if results:
     df_raw = pd.DataFrame(results)
     day_counts = df_raw["Date"].value_counts().to_dict()
 
-# Render Sunday–Saturday Header
-day_headers = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-head_cols = st.columns(7)
+# Default to first future date that has times, or today
+future_with_times = [
+    d.strftime("%Y-%m-%d") for d in calendar_dates 
+    if d >= today_date and day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0
+]
+default_selected = future_with_times[0] if future_with_times else today_date.strftime("%Y-%m-%d")
+
+if "active_calendar_date" not in st.session_state:
+    st.session_state["active_calendar_date"] = default_selected
+
+# Compact calendar day abbreviation header
+cal_head_cols = st.sidebar.columns(7)
+day_headers = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
 for idx, dh in enumerate(day_headers):
-    head_cols[idx].markdown(
-        f"<div style='text-align:center; font-size:12px; font-weight:700; color:#94A3B8; text-transform:uppercase;'>{dh}</div>",
+    cal_head_cols[idx].markdown(
+        f"<div style='text-align:center; font-size:10px; font-weight:700; color:#64748B;'>{dh}</div>", 
         unsafe_allow_html=True
     )
 
-# Render Full Calendar Grid Rows
-for week in month_days:
-    w_cols = st.columns(7)
-    for d_idx, day_num in enumerate(week):
+# Slice into 5 rows of 7 days
+weeks = [calendar_dates[i:i+7] for i in range(0, 35, 7)]
+
+for week_dates in weeks:
+    w_cols = st.sidebar.columns(7)
+    for d_idx, date_obj in enumerate(week_dates):
+        d_str = date_obj.strftime("%Y-%m-%d")
+        day_num = date_obj.strftime("%d").lstrip("0")
+        month_abbr = date_obj.strftime("%b")
+        count = day_counts.get(d_str, 0)
+        is_past = date_obj < today_date
+        has_times = (count > 0)
+        is_selected = (st.session_state["active_calendar_date"] == d_str)
+
+        btn_text = f"{month_abbr} {day_num}"
+        btn_type = "primary" if is_selected else "secondary"
+
         with w_cols[d_idx]:
-            if day_num == 0:
-                st.markdown("<div style='min-height: 48px;'></div>", unsafe_allow_html=True)
+            if is_past or not has_times:
+                st.button(
+                    btn_text, 
+                    key=f"side_cal_{d_str}", 
+                    disabled=True, 
+                    use_container_width=True
+                )
             else:
-                date_val = date(view_year, view_month, day_num)
-                d_str = date_val.strftime("%Y-%m-%d")
-                is_past = date_val < calgary_today
-                count = day_counts.get(d_str, 0)
-                has_times = (count > 0)
-                is_active = (st.session_state["active_calendar_date"] == d_str)
+                if st.button(
+                    btn_text, 
+                    key=f"side_cal_{d_str}", 
+                    type=btn_type, 
+                    use_container_width=True
+                ):
+                    st.session_state["active_calendar_date"] = d_str
+                    st.rerun()
 
-                # Day card label: shows day number and visual status dot if bookable
-                btn_label = f"{day_num} 🟢" if has_times else str(day_num)
-                btn_type = "primary" if is_active else "secondary"
+st.sidebar.caption("🟢 Green/Primary indicates active day. Disabled days have no tee times or are in the past.")
 
-                if is_past or not has_times:
-                    st.button(str(day_num), key=f"cal_btn_{d_str}", disabled=True, use_container_width=True)
-                else:
-                    if st.button(btn_label, key=f"cal_btn_{d_str}", type=btn_type, use_container_width=True):
-                        st.session_state["active_calendar_date"] = d_str
-                        st.rerun()
-
-# --- Tee Sheet Results Section ---
-st.write("---")
-active_date = st.session_state["active_calendar_date"]
-sel_dt = datetime.strptime(active_date, "%Y-%m-%d")
-st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
+# --- Main Page: Tee Time Inspector ---
+st.title("⛳ First Right of Refusal Golf Tee Sheet")
 
 COLUMN_CONFIG = {
     "Course": st.column_config.TextColumn("Course", alignment="left", width="medium"),
@@ -448,9 +441,21 @@ def center_cell(val):
 
 if results:
     df = pd.DataFrame(results)
+    
+    c1, c2, c3 = st.columns(3)
+    metric_label = f"{time_filter} Times Available" if time_filter != "All Day" else "Total Times Available"
+    c1.metric(metric_label, len(df))
+    c2.metric("Courses Monitored", len(df["Course"].unique()))
+    c3.metric("Window", f"{calendar_dates[0].strftime('%b %d')} – {calendar_dates[-1].strftime('%b %d')}")
+
+    st.write("---")
+
+    active_date = st.session_state["active_calendar_date"]
+    sel_dt = datetime.strptime(active_date, "%Y-%m-%d")
     day_matches = df[df["Date"] == active_date]
 
-    # Course Availability KPI Cards
+    st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
+
     course_cols = st.columns(len(selected_courses))
     course_counts = day_matches["Course"].value_counts() if not day_matches.empty else {}
 
@@ -484,6 +489,7 @@ if results:
             use_container_width=True,
             hide_index=True
         )
+
 else:
     no_results_label = (
         f"No {time_filter} tee times found matching your criteria, or tee sheets are not yet open for these dates."
