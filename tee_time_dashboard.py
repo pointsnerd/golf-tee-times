@@ -221,18 +221,15 @@ def get_target_dates(num_days=14):
 # --- UI Setup ---
 st.set_page_config(page_title="First Right of Refusal Golf Tee Sheet", layout="wide")
 
-# Custom CSS for UI spacing
 st.markdown("""
 <style>
     div[data-testid="stHorizontalBlock"] {
-        gap: 0.5rem;
+        gap: 0.35rem;
     }
-    .metric-card {
-        background-color: #1E293B;
-        border: 1px solid #334155;
-        border-radius: 8px;
-        padding: 10px 14px;
-        text-align: center;
+    div[data-testid="stButton"] button {
+        width: 100%;
+        padding: 6px 2px;
+        min-height: 48px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -323,24 +320,26 @@ with st.spinner("Fetching live tee sheets..."):
     results, diag_logs = load_all_data(min_spots, round_length, time_filter)
 
 COLUMN_CONFIG = {
-    "Course": st.column_config.TextColumn("Course", width="medium"),
-    "Time": st.column_config.TextColumn("Time", width="small"),
-    "Open Spots": st.column_config.TextColumn("Open Spots", width="small"),
-    "Price (Adult w/ Cart)": st.column_config.TextColumn("Price (Adult w/ Cart)", width="small"),
-    "Holes": st.column_config.TextColumn("Holes", width="small"),
-    "Book": st.column_config.LinkColumn("Book", display_text="Book Now ↗", width="small")
+    "Course": st.column_config.TextColumn("Course", alignment="left", width="medium"),
+    "Time": st.column_config.TextColumn("Time", alignment="center", width="small"),
+    "Open Spots": st.column_config.TextColumn("Open Spots", alignment="center", width="small"),
+    "Price (Adult w/ Cart)": st.column_config.TextColumn("Price (Adult w/ Cart)", alignment="center", width="small"),
+    "Holes": st.column_config.TextColumn("Holes", alignment="center", width="small"),
+    "Book": st.column_config.LinkColumn("Book", display_text="Book Now ↗", alignment="center", width="small")
 }
 
 def color_courses(val):
     color = COURSE_COLOR_MAP.get(val, "#374151")
     return f"background-color: {color}; color: white; font-weight: bold; border-radius: 4px; padding: 3px 8px;"
 
+def center_cell(val):
+    return "text-align: center;"
+
 target_dates = get_target_dates(num_days=14)
 
 if results:
     df = pd.DataFrame(results)
 
-    # Top-level KPI overview
     c1, c2, c3 = st.columns(3)
     metric_label = f"{time_filter} Times Available" if time_filter != "All Day" else "Total Times Available"
     c1.metric(metric_label, len(df))
@@ -348,70 +347,84 @@ if results:
     c3.metric("Days Tracked", len(target_dates))
 
     st.write("---")
-    st.subheader("📅 14-Day Availability Timeline")
+    st.subheader("📅 14-Day Calendar")
 
-    # Group counts per date
     day_counts = df["Date"].value_counts().to_dict()
 
-    # Pre-select the first date that has open tee times (fallback to today)
+    # Pre-select first date with available times or fallback to today
     dates_with_times = [d.strftime("%Y-%m-%d") for d in target_dates if day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0]
     default_selected = dates_with_times[0] if dates_with_times else target_dates[0].strftime("%Y-%m-%d")
 
-    # Format options for the pill selector
-    date_options = [d.strftime("%Y-%m-%d") for d in target_dates]
+    if "active_calendar_date" not in st.session_state:
+        st.session_state["active_calendar_date"] = default_selected
 
-    def format_date_pill(d_str):
-        d_obj = datetime.strptime(d_str, "%Y-%m-%d")
-        cnt = day_counts.get(d_str, 0)
-        day_label = d_obj.strftime("%a %b %d")
-        return f"{day_label} ({cnt})" if cnt > 0 else f"{day_label} (–)"
+    # Two rows of 7 days (Week 1 & Week 2)
+    weeks = [target_dates[0:7], target_dates[7:14]]
 
-    selected_date = st.pills(
-        "Select Date to View Tee Sheet:",
-        options=date_options,
-        default=default_selected,
-        format_func=format_date_pill
-    )
+    for w_idx, week_dates in enumerate(weeks, start=1):
+        st.caption(f"**Week {w_idx}:** {week_dates[0].strftime('%b %d')} – {week_dates[-1].strftime('%b %d')}")
+        cols = st.columns(7)
+        for d_idx, date_obj in enumerate(week_dates):
+            d_str = date_obj.strftime("%Y-%m-%d")
+            day_name = date_obj.strftime("%a")
+            day_num = date_obj.strftime("%b %d")
+            count = day_counts.get(d_str, 0)
 
-    if selected_date:
-        sel_dt = datetime.strptime(selected_date, "%Y-%m-%d")
-        day_matches = df[df["Date"] == selected_date]
+            # Button label showing day, date, and availability status
+            count_label = f"🟢 {count}" if count > 0 else "⚪ 0"
+            btn_label = f"{day_name} {day_num}\n{count_label}"
+            is_active = (st.session_state["active_calendar_date"] == d_str)
 
-        st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
+            with cols[d_idx]:
+                if st.button(
+                    btn_label,
+                    key=f"cal_btn_{d_str}",
+                    type="primary" if is_active else "secondary",
+                    use_container_width=True
+                ):
+                    st.session_state["active_calendar_date"] = d_str
+                    st.rerun()
 
-        # Row of Course Metric Cards for this selected day
-        course_cols = st.columns(len(selected_courses))
-        course_counts = day_matches["Course"].value_counts() if not day_matches.empty else {}
+    active_date = st.session_state["active_calendar_date"]
+    sel_dt = datetime.strptime(active_date, "%Y-%m-%d")
+    day_matches = df[df["Date"] == active_date]
 
-        for idx, course_name in enumerate(selected_courses):
-            cnt = course_counts.get(course_name, 0)
-            color = COURSE_COLOR_MAP.get(course_name, "#374151")
-            with course_cols[idx]:
-                with st.container(border=True):
-                    st.markdown(
-                        f"<div style='border-left: 4px solid {color}; padding-left: 8px;'>"
-                        f"<span style='font-size: 13px; color: #9CA3AF;'>{course_name}</span><br/>"
-                        f"<strong style='font-size: 20px; color: {'#22C55E' if cnt > 0 else '#6B7280'};'>{cnt} Times</strong>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
+    st.write("---")
+    st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
 
-        st.write("")
+    course_cols = st.columns(len(selected_courses))
+    course_counts = day_matches["Course"].value_counts() if not day_matches.empty else {}
 
-        # Full-width Tee Sheet Table
-        if day_matches.empty:
-            st.info(f"No {time_filter} tee times found for {sel_dt.strftime('%A, %B %d')}.")
-        else:
-            clean_df = day_matches.sort_values(by="RawTime")[
-                ["Course", "Time", "Open Spots", "Price (Adult w/ Cart)", "Holes", "Book"]
-            ]
-            styled_df = clean_df.style.map(color_courses, subset=["Course"])
-            st.dataframe(
-                styled_df,
-                column_config=COLUMN_CONFIG,
-                use_container_width=True,
-                hide_index=True
-            )
+    for idx, course_name in enumerate(selected_courses):
+        cnt = course_counts.get(course_name, 0)
+        color = COURSE_COLOR_MAP.get(course_name, "#374151")
+        with course_cols[idx]:
+            with st.container(border=True):
+                st.markdown(
+                    f"<div style='border-left: 4px solid {color}; padding-left: 8px;'>"
+                    f"<span style='font-size: 13px; color: #9CA3AF;'>{course_name}</span><br/>"
+                    f"<strong style='font-size: 20px; color: {'#22C55E' if cnt > 0 else '#6B7280'};'>{cnt} Times</strong>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+    st.write("")
+
+    if day_matches.empty:
+        st.info(f"No {time_filter} tee times found for {sel_dt.strftime('%A, %B %d')}.")
+    else:
+        clean_df = day_matches.sort_values(by="RawTime")[
+            ["Course", "Time", "Open Spots", "Price (Adult w/ Cart)", "Holes", "Book"]
+        ]
+        styled_df = clean_df.style.map(color_courses, subset=["Course"]).map(
+            center_cell, subset=["Time", "Open Spots", "Price (Adult w/ Cart)", "Holes"]
+        )
+        st.dataframe(
+            styled_df,
+            column_config=COLUMN_CONFIG,
+            use_container_width=True,
+            hide_index=True
+        )
 
 else:
     no_results_label = (
