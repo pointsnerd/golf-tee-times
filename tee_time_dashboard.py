@@ -99,7 +99,6 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if item.get("frozen") is True or item.get("out_of_capacity") is True:
         return False, "", "", ""
 
-    # Capacity resolution
     valid_player_set = set()
 
     if "player_counts" in item and isinstance(item["player_counts"], list):
@@ -130,7 +129,6 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if requested_spots > max_size or requested_spots < min_size:
         return False, "", "", ""
 
-    # Holes validation
     bookable_holes = set()
     default_price = item.get("default_price", {})
     
@@ -161,7 +159,6 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
     if selected_round_length not in bookable_holes:
         return False, "", "", ""
 
-    # Adult Public Rate with Cart Assignment
     if selected_round_length == 18:
         price_str = COURSE_RATES_18.get(club_slug, "$130.00")
     else:
@@ -248,49 +245,45 @@ month_weeks = cal_obj.monthdayscalendar(curr_year, curr_month)
 st.set_page_config(
     page_title="First Right of Refusal Golf Tee Sheet",
     layout="wide",
-    initial_sidebar_state="auto"
+    initial_sidebar_state="collapsed"
 )
 
-# Responsive CSS: desktop gets the custom 1/3 viewport sidebar; mobile gets full-width native drawer
+# Fully responsive CSS: Hides the sidebar on mobile and scales buttons properly
 st.markdown("""
 <style>
-    /* Desktop-only sidebar sizing (screens >= 1024px) */
-    @media (min-width: 1024px) {
-        section[data-testid="stSidebar"] {
-            width: 32vw !important;
-            min-width: 380px !important;
-            max-width: 460px !important;
-        }
+    /* Hide the sidebar completely to ensure 100% full width on mobile */
+    section[data-testid="stSidebar"] {
+        display: none !important;
     }
-
-    /* Mobile / Small Screens (screens < 1024px) */
-    @media (max-width: 1023px) {
-        section[data-testid="stSidebar"] {
-            width: 88vw !important;
-            min-width: 0 !important;
-            max-width: 100vw !important;
-        }
+    button[data-testid="baseButton-headerNoPadding"] {
+        display: none !important;
     }
-
+    
     .stApp {
         background-color: #0F172A;
         color: #F8FAFC;
     }
 
-    section[data-testid="stSidebar"] {
-        background-color: #0B1120;
-        border-right: 1px solid #1E293B;
+    /* Container margin control */
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 2rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        max-width: 1200px !important;
     }
 
-    section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
-        gap: 0.15rem !important;
+    /* Horizontal grid spacing */
+    div[data-testid="stHorizontalBlock"] {
+        gap: 0.25rem !important;
     }
 
-    section[data-testid="stSidebar"] div[data-testid="stButton"] button {
+    /* Calendar buttons: clean, responsive touch targets */
+    div[data-testid="stButton"] button {
         width: 100% !important;
-        padding: 4px 1px !important;
-        min-height: 38px !important;
-        font-size: 11px !important;
+        padding: 6px 2px !important;
+        min-height: 40px !important;
+        font-size: 12px !important;
         line-height: 1.15 !important;
         border-radius: 6px !important;
     }
@@ -301,24 +294,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 1. Calendar container at the top of the sidebar
-cal_top_container = st.sidebar.container()
+st.title("⛳ First Right of Refusal Golf Tee Sheet")
 
-# 2. Below the calendar: Expandable Filter Settings
-with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
-    min_spots = st.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=3)
-    time_filter = st.radio("Tee Time", options=["AM", "PM", "All Day"], index=0)
-    round_length = st.radio("Round Length", options=[18, 9], index=0)
-    selected_courses = st.multiselect(
-        "Select Courses",
-        options=[c["name"] for c in CHRONOGOLF_COURSES],
-        default=[c["name"] for c in CHRONOGOLF_COURSES]
-    )
+# --- 1. Top Section: Expandable Filter Tray ---
+with st.expander("⚙️ Filter Settings", expanded=False):
+    f_col1, f_col2, f_col3, f_col4 = st.columns([1.5, 1.5, 1.5, 3.5])
+    with f_col1:
+        min_spots = st.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=3)
+    with f_col2:
+        time_filter = st.radio("Tee Time", options=["AM", "PM", "All Day"], index=0, horizontal=True)
+    with f_col3:
+        round_length = st.radio("Round Length", options=[18, 9], index=0, horizontal=True)
+    with f_col4:
+        selected_courses = st.multiselect(
+            "Select Courses",
+            options=[c["name"] for c in CHRONOGOLF_COURSES],
+            default=[c["name"] for c in CHRONOGOLF_COURSES]
+        )
     if st.button("🔄 Refresh Data (Force Clear Cache)", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-# --- 3. Cached Raw Tee Sheet Retrieval ---
+# --- 2. Cached Raw Tee Sheet Retrieval ---
 @st.cache_data(ttl=180)
 def load_raw_teetimes(selected_course_names):
     raw_results = []
@@ -345,7 +342,7 @@ def load_raw_teetimes(selected_course_names):
 with st.spinner("Fetching live tee sheets..."):
     cached_teetimes, diag_logs = load_raw_teetimes(tuple(selected_courses))
 
-# In-memory evaluation against user filter settings
+# In-memory filtering
 noon = time(12, 0)
 results = []
 
@@ -409,57 +406,54 @@ default_selected = future_with_times[0] if future_with_times else calgary_today.
 if "active_calendar_date" not in st.session_state:
     st.session_state["active_calendar_date"] = default_selected
 
-# --- Render Calendar at Top of Sidebar ---
-with cal_top_container:
-    st.markdown(f"### 📅 {month_title}")
-    
-    cal_head_cols = st.columns(7)
-    day_headers = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
-    for idx, dh in enumerate(day_headers):
-        cal_head_cols[idx].markdown(
-            f"<div style='text-align:center; font-size:10px; font-weight:700; color:#64748B;'>{dh}</div>", 
-            unsafe_allow_html=True
-        )
+# --- 3. Calendar Grid (Main Page, 100% Width) ---
+st.markdown(f"### 📅 {month_title}")
 
-    for week in month_weeks:
-        w_cols = st.columns(7)
-        for d_idx, day_num in enumerate(week):
-            with w_cols[d_idx]:
-                if day_num == 0:
-                    st.button(" ", key=f"empty_day_{week}_{d_idx}", disabled=True, use_container_width=True)
+cal_head_cols = st.columns(7)
+day_headers = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+for idx, dh in enumerate(day_headers):
+    cal_head_cols[idx].markdown(
+        f"<div style='text-align:center; font-size:11px; font-weight:700; color:#94A3B8; text-transform:uppercase;'>{dh}</div>", 
+        unsafe_allow_html=True
+    )
+
+for week in month_weeks:
+    w_cols = st.columns(7)
+    for d_idx, day_num in enumerate(week):
+        with w_cols[d_idx]:
+            if day_num == 0:
+                st.button(" ", key=f"empty_day_{week}_{d_idx}", disabled=True, use_container_width=True)
+            else:
+                d_obj = date(curr_year, curr_month, day_num)
+                d_str = d_obj.strftime("%Y-%m-%d")
+                is_monitored = d_str in monitored_14_set
+                count = day_counts.get(d_str, 0)
+                has_times = (count > 0)
+                is_active = (st.session_state["active_calendar_date"] == d_str)
+                
+                btn_text = f"{day_num} 🟢" if (is_monitored and has_times) else f"{day_num}"
+                btn_type = "primary" if is_active else "secondary"
+
+                if is_monitored and has_times:
+                    if st.button(
+                        btn_text, 
+                        key=f"cal_btn_{d_str}", 
+                        type=btn_type, 
+                        use_container_width=True
+                    ):
+                        st.session_state["active_calendar_date"] = d_str
+                        st.rerun()
                 else:
-                    d_obj = date(curr_year, curr_month, day_num)
-                    d_str = d_obj.strftime("%Y-%m-%d")
-                    is_monitored = d_str in monitored_14_set
-                    count = day_counts.get(d_str, 0)
-                    has_times = (count > 0)
-                    is_active = (st.session_state["active_calendar_date"] == d_str)
-                    
-                    btn_text = f"Oct {day_num}" if curr_month == 10 else f"{d_obj.strftime('%b')} {day_num}"
-                    btn_type = "primary" if is_active else "secondary"
+                    st.button(
+                        str(day_num), 
+                        key=f"cal_btn_{d_str}", 
+                        disabled=True, 
+                        use_container_width=True
+                    )
 
-                    if is_monitored and has_times:
-                        if st.button(
-                            btn_text, 
-                            key=f"side_cal_{d_str}", 
-                            type=btn_type, 
-                            use_container_width=True
-                        ):
-                            st.session_state["active_calendar_date"] = d_str
-                            st.rerun()
-                    else:
-                        st.button(
-                            btn_text, 
-                            key=f"side_cal_{d_str}", 
-                            disabled=True, 
-                            use_container_width=True
-                        )
-
-    st.write("---")
+st.write("---")
 
 # --- 4. Main Page: Tee Time Inspector ---
-st.title("⛳ First Right of Refusal Golf Tee Sheet")
-
 COLUMN_CONFIG = {
     "Course": st.column_config.TextColumn("Course", alignment="left", width="medium"),
     "Time": st.column_config.TextColumn("Time", alignment="center", width="small"),
@@ -485,7 +479,7 @@ if results:
     c2.metric("Courses Monitored", len(df["Course"].unique()))
     c3.metric("Monitored Horizon", f"{monitored_14_days[0].strftime('%b %d')} – {monitored_14_days[-1].strftime('%b %d')}")
 
-    st.write("---")
+    st.write("")
 
     active_date = st.session_state["active_calendar_date"]
     sel_dt = datetime.strptime(active_date, "%Y-%m-%d")
@@ -493,7 +487,7 @@ if results:
 
     st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
 
-    # Responsive metrics grid
+    # Availability cards per course
     course_cols = st.columns(len(selected_courses))
     course_counts = day_matches["Course"].value_counts() if not day_matches.empty else {}
 
