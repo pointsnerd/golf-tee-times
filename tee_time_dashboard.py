@@ -60,39 +60,60 @@ CHRONOGOLF_COURSES = [
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
 
 def extract_open_spots(item):
-    """Accurately calculates available spots.
-    Returns 0 if sold out, blocked, or out of capacity.
-    """
-    # 1. Out of capacity or sold out flags
+    """Accurately extracts open player spots."""
     if item.get("out_of_capacity") is True or item.get("sold_out") is True or item.get("status") == "booked":
         return 0
 
-    # 2. Direct available/open spot counts
+    # Explicit spot numbers
     if "available_spots" in item and item["available_spots"] is not None:
         return int(item["available_spots"])
     if "open_slots" in item and item["open_slots"] is not None:
         return int(item["open_slots"])
 
-    # 3. Player counts array (e.g. [1, 2, 3, 4] means up to 4 can join)
+    # Player counts array
     if "player_counts" in item and isinstance(item["player_counts"], list):
-        valid_counts = [int(p) for p in item["player_counts"] if isinstance(p, (int, str)) and str(p).isdigit()]
-        if valid_counts:
-            return max(valid_counts)
+        valid = [int(p) for p in item["player_counts"] if str(p).isdigit()]
+        if valid:
+            return max(valid)
 
-    # 4. Total capacity minus booked players
+    # Green fee options checking
+    options = item.get("green_fee_options", [])
+    if options and isinstance(options, list):
+        counts = []
+        for opt in options:
+            if isinstance(opt, dict):
+                if "player_count" in opt:
+                    counts.append(int(opt["player_count"]))
+                elif "player_counts" in opt and isinstance(opt["player_counts"], list):
+                    counts.extend([int(c) for c in opt["player_counts"] if str(c).isdigit()])
+        if counts:
+            return max(counts)
+
+    # Max player count minus booked players
     max_cap = item.get("max_player_count") or item.get("max_players") or 4
     if "booked_players" in item and isinstance(item["booked_players"], list):
         return max(0, max_cap - len(item["booked_players"]))
 
-    # 5. Green fee options player count
-    options = item.get("green_fee_options", [])
-    if options and isinstance(options, list):
-        counts = [opt.get("player_count", 0) for opt in options if isinstance(opt, dict)]
-        if counts:
-            return max(counts)
+    # Default to 1 if item exists without sold out flag
+    return 1
 
-    # If capacity is not explicitly verified, do NOT assume 4
-    return 0
+def parse_local_time(time_str):
+    """Converts Chronogolf time (often UTC ISO string) to Calgary Local Time."""
+    if not time_str:
+        return None
+    try:
+        # Handle ISO strings with Z or UTC offsets
+        if "T" in time_str:
+            clean_str = time_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_str)
+            if dt.tzinfo is not None:
+                local_dt = dt.astimezone(ZoneInfo("America/Edmonton"))
+                return local_dt.time(), local_dt.date()
+            return dt.time(), dt.date()
+        else:
+            return datetime.strptime(str(time_str)[:5], "%H:%M").time(), None
+    except Exception:
+        return None, None
 
 def fetch_course_teetimes(session, course, date_str):
     """Fetch public tee sheet for a course on a given date using Chrome TLS impersonation."""
@@ -157,7 +178,7 @@ st.title("⛳ First Right of Refusal Golf Tee Sheet")
 # Sidebar Controls
 st.sidebar.header("Filter Settings")
 max_time = st.sidebar.time_input("Latest Tee Time (Morning Cutoff)", datetime.strptime("11:59", "%H:%M").time())
-min_spots = st.sidebar.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=3)
+min_spots = st.sidebar.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=0)
 selected_courses = st.sidebar.multiselect(
     "Select Courses",
     options=[c["name"] for c in CHRONOGOLF_COURSES],
@@ -173,7 +194,6 @@ def load_all_data():
     weekend_dates = get_target_weekend_dates(num_weeks=2)
     rows = []
     diagnostics = []
-    
     session = requests.Session()
 
     for course in CHRONOGOLF_COURSES:
@@ -187,30 +207,29 @@ def load_all_data():
             if not isinstance(raw_items, list):
                 continue
 
-            # Deduplicate items by time & date if multi-course loops return redundant slots
             seen_times = set()
 
             for item in raw_items:
                 if not isinstance(item, dict):
                     continue
                 
-                start_time_str = item.get("start_time") or item.get("time")
-                if not start_time_str:
+                raw_time_str = item.get("start_time") or item.get("time") or item.get("date")
+                if not raw_time_str:
                     continue
                 
-                try:
-                    if "T" in str(start_time_str):
-                        t_val = datetime.fromisoformat(str(start_time_str)).time()
-                    else:
-                        t_val = datetime.strptime(str(start_time_str)[:5], "%H:%M").time()
-                except Exception:
+                t_val, parsed_date = parse_local_time(str(raw_time_str))
+                if not t_val:
+                    continue
+
+                # Ensure date matches if UTC conversion crossed midnight
+                target_date_str = parsed_date.strftime("%Y-%m-%d") if parsed_date else date_str
+                if target_date_str != date_str:
                     continue
                 
                 # Check morning window cutoff
                 if t_val <= max_time:
                     open_spots = extract_open_spots(item)
                     
-                    # Strictly eliminate sold-out slots or slots below filter
                     if open_spots < min_spots:
                         continue
 
