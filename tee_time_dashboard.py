@@ -9,7 +9,6 @@ CHRONOGOLF_COURSES = [
     {
         "name": "D'Arcy Ranch Golf Club",
         "short_name": "D'Arcy Ranch",
-        "code": "DR",
         "club_slug": "d-arcy-ranch-golf-club",
         "ids": ["da3eb64e-8ff4-4a43-9958-2e36f108ce4e", "5a18dff5-d436-4574-b25f-75ad6fd82bd1"],
         "rate_18_cart": "$130.00",
@@ -19,7 +18,6 @@ CHRONOGOLF_COURSES = [
     {
         "name": "River Spirit Golf Club",
         "short_name": "River Spirit",
-        "code": "RS",
         "club_slug": "river-spirit-golf-club",
         "ids": [
             "4708f6de-dd55-4722-8613-b305d7c32438", "dfb35728-e416-46be-8904-6b053dc4c1ca",
@@ -33,7 +31,6 @@ CHRONOGOLF_COURSES = [
     {
         "name": "Sundre Golf Club",
         "short_name": "Sundre",
-        "code": "SU",
         "club_slug": "sundre-golf-club",
         "ids": ["804f0be1-3772-4dcb-bf8a-540dd4727ba0"],
         "rate_18_cart": "$140.70",
@@ -43,7 +40,6 @@ CHRONOGOLF_COURSES = [
     {
         "name": "Sirocco Golf Club",
         "short_name": "Sirocco",
-        "code": "SI",
         "club_slug": "sirocco-golf-club",
         "ids": ["eb90994d-d150-4234-b0c3-67c239a78cf3"],
         "rate_18_cart": "$157.50",
@@ -53,7 +49,6 @@ CHRONOGOLF_COURSES = [
 ]
 
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
-COURSE_CODE_MAP = {c["name"]: c["code"] for c in CHRONOGOLF_COURSES}
 
 COURSE_RATES_18 = {
     "d-arcy-ranch-golf-club": "$130.00",
@@ -216,16 +211,32 @@ def fetch_course_teetimes(session, course, date_str):
         return [], f"Error: {e}"
 
 def get_target_dates(num_days=14):
-    """Generate upcoming dates for all days of the week starting today."""
+    """Generate upcoming dates starting from current local day."""
     try:
         today = datetime.now(ZoneInfo("America/Edmonton")).date()
     except Exception:
         today = datetime.now().date()
-        
     return [today + timedelta(days=offset) for offset in range(num_days)]
 
 # --- UI Setup ---
 st.set_page_config(page_title="First Right of Refusal Golf Tee Sheet", layout="wide")
+
+# Custom CSS for UI spacing
+st.markdown("""
+<style>
+    div[data-testid="stHorizontalBlock"] {
+        gap: 0.5rem;
+    }
+    .metric-card {
+        background-color: #1E293B;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 10px 14px;
+        text-align: center;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("⛳ First Right of Refusal Golf Tee Sheet")
 
 # Sidebar Controls
@@ -298,7 +309,7 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
                     "ShortCourse": course["short_name"],
                     "Date": date_str,
                     "DateObj": date_obj,
-                    "Day": date_obj.strftime("%a"),
+                    "Day": date_obj.strftime("%A"),
                     "Time": t_val.strftime("%I:%M %p"),
                     "Open Spots": spots_display,
                     "Price (Adult w/ Cart)": price_str,
@@ -312,107 +323,102 @@ with st.spinner("Fetching live tee sheets..."):
     results, diag_logs = load_all_data(min_spots, round_length, time_filter)
 
 COLUMN_CONFIG = {
-    "Course": st.column_config.TextColumn("Course", alignment="left"),
-    "Time": st.column_config.TextColumn("Time", alignment="center"),
-    "Open Spots": st.column_config.TextColumn("Open Spots", alignment="center"),
-    "Price (Adult w/ Cart)": st.column_config.TextColumn("Price (Adult w/ Cart)", alignment="center"),
-    "Holes": st.column_config.TextColumn("Holes", alignment="center"),
-    "Book": st.column_config.LinkColumn("Book", display_text="Book Now ↗", alignment="center")
+    "Course": st.column_config.TextColumn("Course", width="medium"),
+    "Time": st.column_config.TextColumn("Time", width="small"),
+    "Open Spots": st.column_config.TextColumn("Open Spots", width="small"),
+    "Price (Adult w/ Cart)": st.column_config.TextColumn("Price (Adult w/ Cart)", width="small"),
+    "Holes": st.column_config.TextColumn("Holes", width="small"),
+    "Book": st.column_config.LinkColumn("Book", display_text="Book Now ↗", width="small")
 }
 
 def color_courses(val):
     color = COURSE_COLOR_MAP.get(val, "#374151")
-    return f"background-color: {color}; color: white; font-weight: bold; border-radius: 4px; padding: 3px 6px;"
+    return f"background-color: {color}; color: white; font-weight: bold; border-radius: 4px; padding: 3px 8px;"
 
 target_dates = get_target_dates(num_days=14)
 
 if results:
     df = pd.DataFrame(results)
-    
-    col1, col2, col3 = st.columns(3)
+
+    # Top-level KPI overview
+    c1, c2, c3 = st.columns(3)
     metric_label = f"{time_filter} Times Available" if time_filter != "All Day" else "Total Times Available"
-    col1.metric(metric_label, len(df))
-    col2.metric("Courses Monitored", len(df["Course"].unique()))
-    col3.metric("Days Tracked", len(target_dates))
+    c1.metric(metric_label, len(df))
+    c2.metric("Courses Monitored", len(df["Course"].unique()))
+    c3.metric("Days Tracked", len(target_dates))
 
     st.write("---")
+    st.subheader("📅 14-Day Availability Timeline")
 
-    # Render in 2 blocks of 7 days (Week 1 & Week 2)
-    weeks = [target_dates[0:7], target_dates[7:14]]
+    # Group counts per date
+    day_counts = df["Date"].value_counts().to_dict()
 
-    for week_num, week_dates in enumerate(weeks, 1):
-        st.markdown(f"#### 📅 Week {week_num}: {week_dates[0].strftime('%b %d')} – {week_dates[-1].strftime('%b %d')}")
-        
-        # 7 columns across
-        cols = st.columns(7)
-        
-        for idx, date_obj in enumerate(week_dates):
-            date_str = date_obj.strftime("%Y-%m-%d")
-            day_name = date_obj.strftime("%a")
-            day_num = date_obj.strftime("%b %d")
-            
-            day_matches = df[df["Date"] == date_str]
-            total_slots = len(day_matches)
-            
-            with cols[idx]:
+    # Pre-select the first date that has open tee times (fallback to today)
+    dates_with_times = [d.strftime("%Y-%m-%d") for d in target_dates if day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0]
+    default_selected = dates_with_times[0] if dates_with_times else target_dates[0].strftime("%Y-%m-%d")
+
+    # Format options for the pill selector
+    date_options = [d.strftime("%Y-%m-%d") for d in target_dates]
+
+    def format_date_pill(d_str):
+        d_obj = datetime.strptime(d_str, "%Y-%m-%d")
+        cnt = day_counts.get(d_str, 0)
+        day_label = d_obj.strftime("%a %b %d")
+        return f"{day_label} ({cnt})" if cnt > 0 else f"{day_label} (–)"
+
+    selected_date = st.pills(
+        "Select Date to View Tee Sheet:",
+        options=date_options,
+        default=default_selected,
+        format_func=format_date_pill
+    )
+
+    if selected_date:
+        sel_dt = datetime.strptime(selected_date, "%Y-%m-%d")
+        day_matches = df[df["Date"] == selected_date]
+
+        st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
+
+        # Row of Course Metric Cards for this selected day
+        course_cols = st.columns(len(selected_courses))
+        course_counts = day_matches["Course"].value_counts() if not day_matches.empty else {}
+
+        for idx, course_name in enumerate(selected_courses):
+            cnt = course_counts.get(course_name, 0)
+            color = COURSE_COLOR_MAP.get(course_name, "#374151")
+            with course_cols[idx]:
                 with st.container(border=True):
-                    # Compact date header
-                    st.markdown(f"**{day_name}**  \n<small style='color: #9CA3AF;'>{day_num}</small>", unsafe_allow_html=True)
-                    
-                    if total_slots == 0:
-                        st.markdown("<p style='font-size: 13px; color: #6B7280; margin: 8px 0;'>0 Times</p>", unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"<p style='font-size: 14px; font-weight: bold; color: #22C55E; margin: 4px 0;'>{total_slots} Open</p>", unsafe_allow_html=True)
-                        
-                        course_counts = day_matches["Course"].value_counts()
-                        # Micro badges for the 7-wide card
-                        for c in CHRONOGOLF_COURSES:
-                            if c["name"] not in selected_courses:
-                                continue
-                            cnt = course_counts.get(c["name"], 0)
-                            color = c["color"]
-                            code = c["code"]
-                            
-                            if cnt > 0:
-                                st.markdown(
-                                    f"<div style='font-size: 11px; margin-bottom: 2px;'>"
-                                    f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;background-color:{color};margin-right:4px;'></span>"
-                                    f"<strong>{code}</strong>: <span style='color:#22C55E;font-weight:bold;'>{cnt}</span>"
-                                    f"</div>",
-                                    unsafe_allow_html=True
-                                )
-                            else:
-                                st.markdown(
-                                    f"<div style='font-size: 11px; margin-bottom: 2px; opacity: 0.35;'>"
-                                    f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;background-color:{color};margin-right:4px;'></span>"
-                                    f"<span>{code}</span>: 0"
-                                    f"</div>",
-                                    unsafe_allow_html=True
-                                )
+                    st.markdown(
+                        f"<div style='border-left: 4px solid {color}; padding-left: 8px;'>"
+                        f"<span style='font-size: 13px; color: #9CA3AF;'>{course_name}</span><br/>"
+                        f"<strong style='font-size: 20px; color: {'#22C55E' if cnt > 0 else '#6B7280'};'>{cnt} Times</strong>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
 
-        # Interactive Day Inspector for this specific week
-        active_week_dates = [d.strftime("%Y-%m-%d") for d in week_dates if not df[df["Date"] == d.strftime("%Y-%m-%d")].empty]
-        if active_week_dates:
-            with st.expander(f"🔍 Inspect Tee Sheet Table for Week {week_num}"):
-                inspect_date = st.selectbox(
-                    f"Select Date to View Times (Week {week_num})",
-                    options=active_week_dates,
-                    format_func=lambda x: datetime.strptime(x, "%Y-%m-%d").strftime("%A, %B %d"),
-                    key=f"week_{week_num}_select"
-                )
-                selected_df = df[df["Date"] == inspect_date].sort_values(by="RawTime")[
-                    ["Course", "Time", "Open Spots", "Price (Adult w/ Cart)", "Holes", "Book"]
-                ]
-                styled_df = selected_df.style.map(color_courses, subset=["Course"])
-                st.dataframe(
-                    styled_df,
-                    column_config=COLUMN_CONFIG,
-                    use_container_width=True,
-                    hide_index=True
-                )
-        st.write("---")
+        st.write("")
+
+        # Full-width Tee Sheet Table
+        if day_matches.empty:
+            st.info(f"No {time_filter} tee times found for {sel_dt.strftime('%A, %B %d')}.")
+        else:
+            clean_df = day_matches.sort_values(by="RawTime")[
+                ["Course", "Time", "Open Spots", "Price (Adult w/ Cart)", "Holes", "Book"]
+            ]
+            styled_df = clean_df.style.map(color_courses, subset=["Course"])
+            st.dataframe(
+                styled_df,
+                column_config=COLUMN_CONFIG,
+                use_container_width=True,
+                hide_index=True
+            )
+
 else:
-    no_results_label = f"No {time_filter} tee times found matching your criteria, or tee sheets are not yet open for these dates." if time_filter != "All Day" else "No tee times found matching your criteria, or tee sheets are not yet open for these dates."
+    no_results_label = (
+        f"No {time_filter} tee times found matching your criteria, or tee sheets are not yet open for these dates."
+        if time_filter != "All Day"
+        else "No tee times found matching your criteria, or tee sheets are not yet open for these dates."
+    )
     st.info(no_results_label)
 
 with st.expander("🛠 API Connection Diagnostics"):
