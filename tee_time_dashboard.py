@@ -8,6 +8,8 @@ from curl_cffi import requests
 CHRONOGOLF_COURSES = [
     {
         "name": "D'Arcy Ranch Golf Club",
+        "short_name": "D'Arcy Ranch",
+        "code": "DR",
         "club_slug": "d-arcy-ranch-golf-club",
         "ids": ["da3eb64e-8ff4-4a43-9958-2e36f108ce4e", "5a18dff5-d436-4574-b25f-75ad6fd82bd1"],
         "rate_18_cart": "$130.00",
@@ -16,6 +18,8 @@ CHRONOGOLF_COURSES = [
     },
     {
         "name": "River Spirit Golf Club",
+        "short_name": "River Spirit",
+        "code": "RS",
         "club_slug": "river-spirit-golf-club",
         "ids": [
             "4708f6de-dd55-4722-8613-b305d7c32438", "dfb35728-e416-46be-8904-6b053dc4c1ca",
@@ -28,6 +32,8 @@ CHRONOGOLF_COURSES = [
     },
     {
         "name": "Sundre Golf Club",
+        "short_name": "Sundre",
+        "code": "SU",
         "club_slug": "sundre-golf-club",
         "ids": ["804f0be1-3772-4dcb-bf8a-540dd4727ba0"],
         "rate_18_cart": "$140.70",
@@ -36,6 +42,8 @@ CHRONOGOLF_COURSES = [
     },
     {
         "name": "Sirocco Golf Club",
+        "short_name": "Sirocco",
+        "code": "SI",
         "club_slug": "sirocco-golf-club",
         "ids": ["eb90994d-d150-4234-b0c3-67c239a78cf3"],
         "rate_18_cart": "$157.50",
@@ -45,6 +53,7 @@ CHRONOGOLF_COURSES = [
 ]
 
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
+COURSE_CODE_MAP = {c["name"]: c["code"] for c in CHRONOGOLF_COURSES}
 
 COURSE_RATES_18 = {
     "d-arcy-ranch-golf-club": "$130.00",
@@ -286,9 +295,10 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
 
                 rows.append({
                     "Course": course["name"],
+                    "ShortCourse": course["short_name"],
                     "Date": date_str,
                     "DateObj": date_obj,
-                    "Day": date_obj.strftime("%A"),
+                    "Day": date_obj.strftime("%a"),
                     "Time": t_val.strftime("%I:%M %p"),
                     "Open Spots": spots_display,
                     "Price (Adult w/ Cart)": price_str,
@@ -327,59 +337,80 @@ if results:
 
     st.write("---")
 
-    # Render days in responsive blocks of 3 columns
-    for i in range(0, len(target_dates), 3):
-        day_slice = target_dates[i:i+3]
-        cols = st.columns(len(day_slice))
+    # Render in 2 blocks of 7 days (Week 1 & Week 2)
+    weeks = [target_dates[0:7], target_dates[7:14]]
+
+    for week_num, week_dates in enumerate(weeks, 1):
+        st.markdown(f"#### 📅 Week {week_num}: {week_dates[0].strftime('%b %d')} – {week_dates[-1].strftime('%b %d')}")
         
-        for idx, date_obj in enumerate(day_slice):
+        # 7 columns across
+        cols = st.columns(7)
+        
+        for idx, date_obj in enumerate(week_dates):
             date_str = date_obj.strftime("%Y-%m-%d")
-            formatted_date_header = date_obj.strftime("%A, %B %d")
+            day_name = date_obj.strftime("%a")
+            day_num = date_obj.strftime("%b %d")
             
             day_matches = df[df["Date"] == date_str]
+            total_slots = len(day_matches)
             
             with cols[idx]:
                 with st.container(border=True):
-                    st.subheader(formatted_date_header)
+                    # Compact date header
+                    st.markdown(f"**{day_name}**  \n<small style='color: #9CA3AF;'>{day_num}</small>", unsafe_allow_html=True)
                     
-                    if day_matches.empty:
-                        empty_label = f"No {time_filter} times open." if time_filter != "All Day" else "No times open."
-                        st.caption(empty_label)
+                    if total_slots == 0:
+                        st.markdown("<p style='font-size: 13px; color: #6B7280; margin: 8px 0;'>0 Times</p>", unsafe_allow_html=True)
                     else:
-                        course_counts = day_matches["Course"].value_counts()
+                        st.markdown(f"<p style='font-size: 14px; font-weight: bold; color: #22C55E; margin: 4px 0;'>{total_slots} Open</p>", unsafe_allow_html=True)
                         
-                        for course_name in selected_courses:
-                            count = course_counts.get(course_name, 0)
-                            color = COURSE_COLOR_MAP.get(course_name, "#374151")
-                            badge_style = f"display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: {color}; margin-right: 6px;"
+                        course_counts = day_matches["Course"].value_counts()
+                        # Micro badges for the 7-wide card
+                        for c in CHRONOGOLF_COURSES:
+                            if c["name"] not in selected_courses:
+                                continue
+                            cnt = course_counts.get(c["name"], 0)
+                            color = c["color"]
+                            code = c["code"]
                             
-                            if count > 0:
+                            if cnt > 0:
                                 st.markdown(
-                                    f'<div style="margin-bottom: 4px;">'
-                                    f'<span style="{badge_style}"></span>'
-                                    f'<strong>{course_name}</strong>: '
-                                    f'<span style="color: #22C55E; font-weight: bold;">{count} Available</span>'
-                                    f'</div>',
+                                    f"<div style='font-size: 11px; margin-bottom: 2px;'>"
+                                    f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;background-color:{color};margin-right:4px;'></span>"
+                                    f"<strong>{code}</strong>: <span style='color:#22C55E;font-weight:bold;'>{cnt}</span>"
+                                    f"</div>",
                                     unsafe_allow_html=True
                                 )
                             else:
                                 st.markdown(
-                                    f'<div style="margin-bottom: 4px; opacity: 0.5;">'
-                                    f'<span style="{badge_style}"></span>'
-                                    f'<span>{course_name}</span>: 0 Available'
-                                    f'</div>',
+                                    f"<div style='font-size: 11px; margin-bottom: 2px; opacity: 0.35;'>"
+                                    f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;background-color:{color};margin-right:4px;'></span>"
+                                    f"<span>{code}</span>: 0"
+                                    f"</div>",
                                     unsafe_allow_html=True
                                 )
-                        
-                        with st.expander(f"View {len(day_matches)} Times & Book"):
-                            clean_day_df = day_matches.sort_values(by="RawTime")[["Course", "Time", "Open Spots", "Price (Adult w/ Cart)", "Holes", "Book"]]
-                            styled_day = clean_day_df.style.map(color_courses, subset=["Course"])
-                            st.dataframe(
-                                styled_day,
-                                column_config=COLUMN_CONFIG,
-                                use_container_width=True,
-                                hide_index=True
-                            )
+
+        # Interactive Day Inspector for this specific week
+        active_week_dates = [d.strftime("%Y-%m-%d") for d in week_dates if not df[df["Date"] == d.strftime("%Y-%m-%d")].empty]
+        if active_week_dates:
+            with st.expander(f"🔍 Inspect Tee Sheet Table for Week {week_num}"):
+                inspect_date = st.selectbox(
+                    f"Select Date to View Times (Week {week_num})",
+                    options=active_week_dates,
+                    format_func=lambda x: datetime.strptime(x, "%Y-%m-%d").strftime("%A, %B %d"),
+                    key=f"week_{week_num}_select"
+                )
+                selected_df = df[df["Date"] == inspect_date].sort_values(by="RawTime")[
+                    ["Course", "Time", "Open Spots", "Price (Adult w/ Cart)", "Holes", "Book"]
+                ]
+                styled_df = selected_df.style.map(color_courses, subset=["Course"])
+                st.dataframe(
+                    styled_df,
+                    column_config=COLUMN_CONFIG,
+                    use_container_width=True,
+                    hide_index=True
+                )
+        st.write("---")
 else:
     no_results_label = f"No {time_filter} tee times found matching your criteria, or tee sheets are not yet open for these dates." if time_filter != "All Day" else "No tee times found matching your criteria, or tee sheets are not yet open for these dates."
     st.info(no_results_label)
