@@ -10,8 +10,8 @@ CHRONOGOLF_COURSES = [
         "name": "D'Arcy Ranch Golf Club",
         "club_slug": "d-arcy-ranch-golf-club",
         "ids": ["da3eb64e-8ff4-4a43-9958-2e36f108ce4e", "5a18dff5-d436-4574-b25f-75ad6fd82bd1"],
-        "rate_18_cart": "$100.00",
-        "rate_9_cart": "$55.00",
+        "rate_18_cart": "$130.00",
+        "rate_9_cart": "$70.00",
         "color": "#1E3A8A"  # Deep Blue
     },
     {
@@ -30,8 +30,8 @@ CHRONOGOLF_COURSES = [
         "name": "Sundre Golf Club",
         "club_slug": "sundre-golf-club",
         "ids": ["804f0be1-3772-4dcb-bf8a-540dd4727ba0"],
-        "rate_18_cart": "$109.00",
-        "rate_9_cart": "$65.00",
+        "rate_18_cart": "$140.70",
+        "rate_9_cart": "$80.00",
         "color": "#581C87"  # Deep Purple
     },
     {
@@ -46,18 +46,18 @@ CHRONOGOLF_COURSES = [
 
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
 
-# Static lookup for 18-hole and 9-hole Adult with Cart pricing
+# Static verified 18-hole and 9-hole Adult with Cart pricing
 COURSE_RATES_18 = {
-    "d-arcy-ranch-golf-club": "$100.00",
+    "d-arcy-ranch-golf-club": "$130.00",
     "river-spirit-golf-club": "$180.00",
-    "sundre-golf-club": "$109.00",
+    "sundre-golf-club": "$140.70",
     "sirocco-golf-club": "$157.50"
 }
 
 COURSE_RATES_9 = {
-    "d-arcy-ranch-golf-club": "$55.00",
+    "d-arcy-ranch-golf-club": "$70.00",
     "river-spirit-golf-club": "$95.00",
-    "sundre-golf-club": "$65.00",
+    "sundre-golf-club": "$80.00",
     "sirocco-golf-club": "$85.00"
 }
 
@@ -155,9 +155,9 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length, club_
 
     # 3. Adult Public Rate with Cart Assignment
     if selected_round_length == 18:
-        price_str = COURSE_RATES_18.get(club_slug, "$100.00")
+        price_str = COURSE_RATES_18.get(club_slug, "$130.00")
     else:
-        price_str = COURSE_RATES_9.get(club_slug, "$55.00")
+        price_str = COURSE_RATES_9.get(club_slug, "$70.00")
 
     if 9 in bookable_holes and 18 in bookable_holes:
         holes_display = "9 / 18"
@@ -274,7 +274,6 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
                 if not t_val:
                     continue
 
-                # Handle AM, PM, and All Day
                 if selected_time_period == "AM" and t_val >= noon:
                     continue
                 elif selected_time_period == "PM" and t_val < noon:
