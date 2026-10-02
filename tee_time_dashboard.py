@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from curl_cffi import requests
+import json
 
 # --- Course Configuration Registry ---
 CHRONOGOLF_COURSES = [
@@ -59,88 +60,73 @@ CHRONOGOLF_COURSES = [
 
 COURSE_COLOR_MAP = {c["name"]: c["color"] for c in CHRONOGOLF_COURSES}
 
-def extract_price(item):
-    """Safely inspects all possible price fields in Chronogolf schemas."""
-    # 1. Direct top-level fields
-    for key in ["green_fee", "price", "rate", "cost"]:
-        val = item.get(key)
-        if isinstance(val, (int, float)) and val > 0:
-            return f"${val / 100:.2f}" if val > 500 else f"${val:.2f}"
-
-    # 2. Inspect green_fee_options list
-    options = item.get("green_fee_options", [])
-    if isinstance(options, list):
-        for opt in options:
-            if isinstance(opt, dict):
-                for k in ["price", "rate", "cost", "green_fee"]:
-                    val = opt.get(k)
-                    if isinstance(val, (int, float)) and val > 0:
-                        return f"${val / 100:.2f}" if val > 500 else f"${val:.2f}"
-
-    # 3. Inspect rates/pricing sub-objects
-    for container_key in ["rates", "pricing"]:
-        container = item.get(container_key)
-        if isinstance(container, list):
-            for entry in container:
-                if isinstance(entry, dict):
-                    val = entry.get("price") or entry.get("rate")
-                    if isinstance(val, (int, float)) and val > 0:
-                        return f"${val / 100:.2f}" if val > 500 else f"${val:.2f}"
-    return "Check Club"
-
-def parse_slot_details(item):
+def validate_and_extract_visitor_slot(item):
     """
-    Validates if a tee time is genuinely open.
-    Returns (open_spots, price_str) or (0, None).
+    Strictly verifies if a tee time interval is bookable for visitors.
+    Returns (open_spots, price_str) or (0, None) if completely unavailable.
     """
-    # 1. Immediately drop explicitly blocked or sold out intervals
+    # 1. Reject unavailable / blocked statuses
     if item.get("out_of_capacity") is True or item.get("sold_out") is True or item.get("status") == "booked":
         return 0, None
 
-    # 2. Drop member-only or internal blocked records
     if item.get("public") is False or item.get("is_member_only") is True:
         return 0, None
 
-    # 3. Determine open spots
-    open_spots = 0
+    # 2. Inspect green_fee_options. This is the source of truth for public booking.
+    options = item.get("green_fee_options", [])
+    if not isinstance(options, list) or len(options) == 0:
+        return 0, None
 
-    if "available_spots" in item and item["available_spots"] is not None:
+    valid_rates = []
+    player_capacity_set = set()
+
+    for opt in options:
+        if not isinstance(opt, dict):
+            continue
+
+        # Extract rate/price from option
+        raw_price = None
+        for key in ["price", "rate", "green_fee", "cost", "amount"]:
+            v = opt.get(key)
+            if isinstance(v, (int, float)) and v > 0:
+                raw_price = v
+                break
+
+        if raw_price is not None:
+            valid_rates.append(raw_price)
+            # Collect allowable player numbers for this rate
+            if "player_counts" in opt and isinstance(opt["player_counts"], list):
+                for p in opt["player_counts"]:
+                    if str(p).isdigit() and int(p) > 0:
+                        player_capacity_set.add(int(p))
+            elif "player_count" in opt and str(opt["player_count"]).isdigit() and int(opt["player_count"]) > 0:
+                player_capacity_set.add(int(opt["player_count"]))
+
+    # If no options had a non-zero price, this is a phantom/member slot
+    if not valid_rates:
+        return 0, None
+
+    # Calculate actual spots open
+    if player_capacity_set:
+        open_spots = max(player_capacity_set)
+    elif "available_spots" in item and item["available_spots"] is not None:
         open_spots = int(item["available_spots"])
     elif "open_slots" in item and item["open_slots"] is not None:
         open_spots = int(item["open_slots"])
-    elif "player_counts" in item and isinstance(item["player_counts"], list):
-        valid = [int(p) for p in item["player_counts"] if str(p).isdigit()]
-        if valid:
-            open_spots = max(valid)
+    else:
+        # If no explicit capacity, do not assume 4
+        open_spots = 1
 
-    # 4. Check green_fee_options if still 0
-    if open_spots == 0:
-        options = item.get("green_fee_options", [])
-        if isinstance(options, list):
-            counts = []
-            for opt in options:
-                if isinstance(opt, dict):
-                    if "player_count" in opt and str(opt["player_count"]).isdigit():
-                        counts.append(int(opt["player_count"]))
-                    elif "player_counts" in opt and isinstance(opt["player_counts"], list):
-                        counts.extend([int(c) for c in opt["player_counts"] if str(c).isdigit()])
-            if counts:
-                open_spots = max(counts)
-
-    # 5. Fallback to capacity minus booked players
-    if open_spots == 0:
-        max_cap = item.get("max_player_count") or item.get("max_players") or 4
-        booked = len(item.get("booked_players", [])) if isinstance(item.get("booked_players"), list) else 0
-        open_spots = max(0, max_cap - booked)
-
-    if open_spots == 0:
+    if open_spots <= 0:
         return 0, None
 
-    price_str = extract_price(item)
+    min_price = min(valid_rates)
+    price_str = f"${min_price / 100:.2f}" if min_price > 500 else f"${min_price:.2f}"
+
     return open_spots, price_str
 
 def parse_local_time(time_str):
-    """Converts Chronogolf time (often UTC ISO string) to Calgary Local Time."""
+    """Converts Chronogolf time (UTC ISO string) to Calgary Local Time."""
     if not time_str:
         return None, None
     try:
@@ -157,12 +143,13 @@ def parse_local_time(time_str):
         return None, None
 
 def fetch_course_teetimes(session, course, date_str):
-    """Fetch public tee sheet for a course on a given date using Chrome TLS impersonation."""
+    """Fetch public tee sheet for visitors using Chrome TLS impersonation."""
     base_url = "https://www.chronogolf.com/marketplace/v2/teetimes"
     params = {
         "start_date": date_str,
         "course_ids": ",".join(course["ids"]),
         "holes": course["holes"],
+        "affiliation_type": "visitor",
         "page": "1"
     }
     headers = {
@@ -235,6 +222,7 @@ def load_all_data():
     weekend_dates = get_target_weekend_dates(num_weeks=2)
     rows = []
     diagnostics = []
+    raw_sample = None
     session = requests.Session()
 
     for course in CHRONOGOLF_COURSES:
@@ -247,6 +235,9 @@ def load_all_data():
             
             if not isinstance(raw_items, list):
                 continue
+
+            if raw_sample is None and len(raw_items) > 0:
+                raw_sample = raw_items[0]
 
             seen_times = set()
 
@@ -268,8 +259,9 @@ def load_all_data():
                 
                 # Check morning window cutoff
                 if t_val <= max_time:
-                    open_spots, price_str = parse_slot_details(item)
+                    open_spots, price_str = validate_and_extract_visitor_slot(item)
                     
+                    # Strictly discard non-bookable slots
                     if open_spots < min_spots or price_str is None:
                         continue
 
@@ -292,10 +284,10 @@ def load_all_data():
                         "Book": booking_url,
                         "RawTime": t_val
                     })
-    return rows, diagnostics
+    return rows, diagnostics, raw_sample
 
 with st.spinner("Fetching live tee sheets..."):
-    results, diag_logs = load_all_data()
+    results, diag_logs, sample_payload = load_all_data()
 
 COLUMN_CONFIG = {
     "Course": st.column_config.TextColumn("Course", alignment="left"),
@@ -376,6 +368,9 @@ if results:
 else:
     st.info("No morning tee times found matching your criteria, or tee sheets are not yet open for these dates.")
 
-with st.expander("🛠 API Connection Diagnostics"):
+with st.expander("🛠 API Connection Diagnostics & Raw Sample"):
     for log in diag_logs:
         st.text(log)
+    if sample_payload:
+        st.write("First Raw Tee Time Payload Received from API:")
+        st.code(json.dumps(sample_payload, indent=2))
