@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from curl_cffi import requests
 
 # --- Course Configuration Registry ---
+# Refined modern links-style palette: Augusta Pine, Heritage Sandstone, Heather Sage, and Clay Copper
 CHRONOGOLF_COURSES = [
     {
         "name": "D'Arcy Ranch Golf Club",
@@ -13,7 +14,7 @@ CHRONOGOLF_COURSES = [
         "ids": ["da3eb64e-8ff4-4a43-9958-2e36f108ce4e", "5a18dff5-d436-4574-b25f-75ad6fd82bd1"],
         "rate_18_cart": "$130.00",
         "rate_9_cart": "$70.00",
-        "color": "#1E3A8A"  # Deep Blue
+        "color": "#1B4332"  # Deep Augusta Pine
     },
     {
         "name": "River Spirit Golf Club",
@@ -26,7 +27,7 @@ CHRONOGOLF_COURSES = [
         ],
         "rate_18_cart": "$180.00",
         "rate_9_cart": "$95.00",
-        "color": "#9A3412"  # Rust Amber
+        "color": "#B45309"  # Heritage Copper Amber
     },
     {
         "name": "Sundre Golf Club",
@@ -35,7 +36,7 @@ CHRONOGOLF_COURSES = [
         "ids": ["804f0be1-3772-4dcb-bf8a-540dd4727ba0"],
         "rate_18_cart": "$140.70",
         "rate_9_cart": "$80.00",
-        "color": "#581C87"  # Deep Purple
+        "color": "#4338CA"  # Classic Fairway Indigo
     },
     {
         "name": "Sirocco Golf Club",
@@ -44,7 +45,7 @@ CHRONOGOLF_COURSES = [
         "ids": ["eb90994d-d150-4234-b0c3-67c239a78cf3"],
         "rate_18_cart": "$157.50",
         "rate_9_cart": "$85.00",
-        "color": "#9D174D"  # Berry Rose
+        "color": "#0F766E"  # Juniper Sage Teal
     }
 ]
 
@@ -210,26 +211,50 @@ def fetch_course_teetimes(session, course, date_str):
     except Exception as e:
         return [], f"Error: {e}"
 
-def get_target_dates(num_days=14):
-    """Generate upcoming dates starting from current local day."""
+def get_sunday_start_calendar_dates(num_weeks=2):
+    """
+    Builds a calendar grid where Sunday starts each week.
+    Finds the most recent Sunday relative to today, then builds 14 consecutive days.
+    """
     try:
         today = datetime.now(ZoneInfo("America/Edmonton")).date()
     except Exception:
         today = datetime.now().date()
-    return [today + timedelta(days=offset) for offset in range(num_days)]
+        
+    # Python weekday(): Monday is 0, Sunday is 6
+    # Days since preceding Sunday: (weekday + 1) % 7
+    days_since_sunday = (today.weekday() + 1) % 7
+    start_sunday = today - timedelta(days=days_since_sunday)
+    
+    calendar_dates = [start_sunday + timedelta(days=i) for i in range(num_weeks * 7)]
+    return calendar_dates, today
 
 # --- UI Setup ---
 st.set_page_config(page_title="First Right of Refusal Golf Tee Sheet", layout="wide")
 
+# Theme styling: Warm slate slate background, refined typography, and clubhouse aesthetic
 st.markdown("""
 <style>
-    div[data-testid="stHorizontalBlock"] {
-        gap: 0.35rem;
+    /* Global layout & typography */
+    .stApp {
+        background-color: #0F172A;
+        color: #F8FAFC;
     }
-    div[data-testid="stButton"] button {
-        width: 100%;
-        padding: 6px 2px;
-        min-height: 48px;
+    
+    /* Calendar Card styling */
+    .cal-day-header {
+        text-align: center;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #94A3B8;
+        margin-bottom: 2px;
+    }
+    
+    /* Center columns in the table */
+    div[data-testid="stDataFrame"] td {
+        font-size: 13.5px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -253,9 +278,10 @@ if st.button("🔄 Refresh Data (Force Clear Cache)"):
     st.rerun()
 
 # --- Data Fetching & Processing ---
+calendar_dates, today_date = get_sunday_start_calendar_dates(num_weeks=2)
+
 @st.cache_data(ttl=60)
 def load_all_data(requested_spots, selected_holes, selected_time_period):
-    target_dates = get_target_dates(num_days=14)
     rows = []
     diagnostics = []
     session = requests.Session()
@@ -264,7 +290,11 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
     for course in CHRONOGOLF_COURSES:
         if course["name"] not in selected_courses:
             continue
-        for date_obj in target_dates:
+        for date_obj in calendar_dates:
+            # Skip past days within the week
+            if date_obj < today_date:
+                continue
+                
             date_str = date_obj.strftime("%Y-%m-%d")
             raw_items, diag_msg = fetch_course_teetimes(session, course, date_str)
             diagnostics.append(f"{course['name']} [{date_str}]: {diag_msg}")
@@ -329,61 +359,96 @@ COLUMN_CONFIG = {
 }
 
 def color_courses(val):
-    color = COURSE_COLOR_MAP.get(val, "#374151")
-    return f"background-color: {color}; color: white; font-weight: bold; border-radius: 4px; padding: 3px 8px;"
+    color = COURSE_COLOR_MAP.get(val, "#334155")
+    return f"background-color: {color}; color: #FFFFFF; font-weight: 600; border-radius: 4px; padding: 3px 8px;"
 
 def center_cell(val):
     return "text-align: center;"
 
-target_dates = get_target_dates(num_days=14)
-
 if results:
     df = pd.DataFrame(results)
+    day_counts = df["Date"].value_counts().to_dict()
 
+    # Metric Row
     c1, c2, c3 = st.columns(3)
     metric_label = f"{time_filter} Times Available" if time_filter != "All Day" else "Total Times Available"
     c1.metric(metric_label, len(df))
     c2.metric("Courses Monitored", len(df["Course"].unique()))
-    c3.metric("Days Tracked", len(target_dates))
+    c3.metric("Calendar Window", f"{calendar_dates[0].strftime('%b %d')} – {calendar_dates[-1].strftime('%b %d')}")
 
     st.write("---")
-    st.subheader("📅 14-Day Calendar")
+    st.subheader("📅 14-Day Calendar (Sunday – Saturday)")
 
-    day_counts = df["Date"].value_counts().to_dict()
-
-    # Pre-select first date with available times or fallback to today
-    dates_with_times = [d.strftime("%Y-%m-%d") for d in target_dates if day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0]
-    default_selected = dates_with_times[0] if dates_with_times else target_dates[0].strftime("%Y-%m-%d")
+    # Default to first future date with availability
+    future_dates_with_times = [
+        d.strftime("%Y-%m-%d") for d in calendar_dates 
+        if d >= today_date and day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0
+    ]
+    default_selected = future_dates_with_times[0] if future_dates_with_times else today_date.strftime("%Y-%m-%d")
 
     if "active_calendar_date" not in st.session_state:
         st.session_state["active_calendar_date"] = default_selected
 
-    # Two rows of 7 days (Week 1 & Week 2)
-    weeks = [target_dates[0:7], target_dates[7:14]]
+    # Split into 2 rows of 7 days: Week 1 & Week 2
+    weeks = [calendar_dates[0:7], calendar_dates[7:14]]
+    day_abbrs = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"]
 
     for w_idx, week_dates in enumerate(weeks, start=1):
-        st.caption(f"**Week {w_idx}:** {week_dates[0].strftime('%b %d')} – {week_dates[-1].strftime('%b %d')}")
+        st.markdown(
+            f"<div style='font-size: 13px; font-weight: 600; color: #94A3B8; margin-top: 6px; margin-bottom: 4px;'>"
+            f"WEEK {w_idx}: {week_dates[0].strftime('%B %d')} – {week_dates[-1].strftime('%B %d')}"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
         cols = st.columns(7)
         for d_idx, date_obj in enumerate(week_dates):
             d_str = date_obj.strftime("%Y-%m-%d")
-            day_name = date_obj.strftime("%a")
-            day_num = date_obj.strftime("%b %d")
+            day_name = date_obj.strftime("%A")
+            month_day = date_obj.strftime("%B %d").lstrip("0")
             count = day_counts.get(d_str, 0)
-
-            # Button label showing day, date, and availability status
-            count_label = f"🟢 {count}" if count > 0 else "⚪ 0"
-            btn_label = f"{day_name} {day_num}\n{count_label}"
+            is_past = date_obj < today_date
             is_active = (st.session_state["active_calendar_date"] == d_str)
 
-            with cols[d_idx]:
-                if st.button(
-                    btn_label,
-                    key=f"cal_btn_{d_str}",
-                    type="primary" if is_active else "secondary",
-                    use_container_width=True
-                ):
-                    st.session_state["active_calendar_date"] = d_str
-                    st.rerun()
+            if is_past:
+                card_html = (
+                    f"<div style='background-color: #0F172A; border: 1px solid #1E293B; border-radius: 8px; padding: 12px 6px; text-align: center; opacity: 0.35; min-height: 105px; display: flex; flex-direction: column; justify-content: center;'>"
+                    f"<div style='font-size: 11px; font-weight: 700; color: #64748B; text-transform: uppercase;'>{day_name}</div>"
+                    f"<div style='font-size: 13px; font-weight: 600; color: #64748B; margin: 3px 0;'>{month_day}</div>"
+                    f"<div style='font-size: 11px; color: #475569;'>Past</div>"
+                    f"</div>"
+                )
+                with cols[d_idx]:
+                    st.markdown(card_html, unsafe_allow_html=True)
+            else:
+                # Format:
+                # Sunday
+                # October 4
+                # 11 Bookings Available
+                if count > 0:
+                    status_text = f"<span style='color: #10B981; font-weight: 700;'>{count} Bookings Available</span>"
+                    border_color = "#10B981" if is_active else "#334155"
+                    bg_color = "#132338" if is_active else "#1E293B"
+                else:
+                    status_text = "<span style='color: #64748B;'>0 Bookings Available</span>"
+                    border_color = "#38BDF8" if is_active else "#1E293B"
+                    bg_color = "#1A2436" if is_active else "#141D2E"
+
+                active_glow = "box-shadow: 0 0 0 2px #38BDF8;" if is_active else ""
+
+                card_html = (
+                    f"<div style='background-color: {bg_color}; border: 1px solid {border_color}; {active_glow} border-radius: 8px; padding: 12px 6px; text-align: center; min-height: 105px; display: flex; flex-direction: column; justify-content: center; cursor: pointer;'>"
+                    f"<div style='font-size: 11px; font-weight: 700; color: #94A3B8; text-transform: uppercase;'>{day_name}</div>"
+                    f"<div style='font-size: 14px; font-weight: 700; color: #F8FAFC; margin: 3px 0;'>{month_day}</div>"
+                    f"<div style='font-size: 11px; margin-top: 2px;'>{status_text}</div>"
+                    f"</div>"
+                )
+
+                with cols[d_idx]:
+                    st.markdown(card_html, unsafe_allow_html=True)
+                    if st.button(f"Select {month_day}", key=f"btn_sel_{d_str}", use_container_width=True):
+                        st.session_state["active_calendar_date"] = d_str
+                        st.rerun()
 
     active_date = st.session_state["active_calendar_date"]
     sel_dt = datetime.strptime(active_date, "%Y-%m-%d")
@@ -392,18 +457,19 @@ if results:
     st.write("---")
     st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
 
+    # Course breakdown header pills
     course_cols = st.columns(len(selected_courses))
     course_counts = day_matches["Course"].value_counts() if not day_matches.empty else {}
 
     for idx, course_name in enumerate(selected_courses):
         cnt = course_counts.get(course_name, 0)
-        color = COURSE_COLOR_MAP.get(course_name, "#374151")
+        color = COURSE_COLOR_MAP.get(course_name, "#334155")
         with course_cols[idx]:
             with st.container(border=True):
                 st.markdown(
-                    f"<div style='border-left: 4px solid {color}; padding-left: 8px;'>"
-                    f"<span style='font-size: 13px; color: #9CA3AF;'>{course_name}</span><br/>"
-                    f"<strong style='font-size: 20px; color: {'#22C55E' if cnt > 0 else '#6B7280'};'>{cnt} Times</strong>"
+                    f"<div style='border-left: 4px solid {color}; padding-left: 10px;'>"
+                    f"<span style='font-size: 12px; font-weight: 600; color: #94A3B8;'>{course_name}</span><br/>"
+                    f"<strong style='font-size: 20px; color: {'#10B981' if cnt > 0 else '#64748B'};'>{cnt} Times</strong>"
                     f"</div>",
                     unsafe_allow_html=True
                 )
