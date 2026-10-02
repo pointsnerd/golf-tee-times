@@ -63,26 +63,37 @@ def parse_slot_time(item):
             pass
     return None
 
+def calculate_adult_with_cart_price(price_dict):
+    """
+    Computes adult public walk-up price including green fee, cart, and 5% GST.
+    """
+    gf = price_dict.get("green_fee") or price_dict.get("subtotal") or 0.0
+    
+    # Check for half_cart, cart, or one_person_cart
+    cart = (
+        price_dict.get("half_cart")
+        or price_dict.get("cart")
+        or price_dict.get("one_person_cart")
+        or 0.0
+    )
+    
+    base_subtotal = float(gf) + float(cart)
+    if base_subtotal <= 0:
+        return 0.0
+        
+    # Apply standard Alberta 5% GST
+    total_with_tax = round(base_subtotal * 1.05, 2)
+    return total_with_tax
+
 def evaluate_chronogolf_slot(item, requested_spots, selected_round_length):
     """
-    Evaluates bookability using Chronogolf's default_price, player limits, and selected round length (18 or 9).
-    Returns (is_valid, spots_display, price_str, holes_display)
+    Evaluates bookability using Chronogolf's default_price, green_fee_options,
+    player limits, and selected round length (18 or 9) with Adult + Cart pricing.
     """
     if item.get("frozen") is True or item.get("out_of_capacity") is True:
         return False, "", "", ""
 
-    # Rate and price extraction
-    default_price = item.get("default_price", {})
-    if not isinstance(default_price, dict):
-        return False, "", "", ""
-
-    subtotal = default_price.get("subtotal") or default_price.get("green_fee")
-    if subtotal is None or subtotal <= 0:
-        return False, "", "", ""
-
-    price_str = f"${subtotal:.2f}"
-
-    # Capacity resolution across schema variations
+    # 1. Capacity resolution
     max_size = item.get("max_player_size")
     min_size = item.get("min_player_size", 1)
 
@@ -110,14 +121,16 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length):
     if max_size < requested_spots:
         return False, "", "", ""
 
-    # Collect all playable hole options for this interval
+    # 2. Holes validation
     bookable_holes = set()
+    default_price = item.get("default_price", {})
     
-    dp_holes = default_price.get("bookable_holes")
-    if isinstance(dp_holes, list):
-        bookable_holes.update(dp_holes)
-    elif isinstance(dp_holes, int):
-        bookable_holes.add(dp_holes)
+    if isinstance(default_price, dict):
+        dp_holes = default_price.get("bookable_holes")
+        if isinstance(dp_holes, list):
+            bookable_holes.update(dp_holes)
+        elif isinstance(dp_holes, int):
+            bookable_holes.add(dp_holes)
 
     course_obj = item.get("course", {})
     c_holes = course_obj.get("bookable_holes", [])
@@ -136,11 +149,35 @@ def evaluate_chronogolf_slot(item, requested_spots, selected_round_length):
     if not bookable_holes:
         bookable_holes.add(18)
 
-    # Filter strictly against the selected radio option (18 or 9)
     if selected_round_length not in bookable_holes:
         return False, "", "", ""
 
-    # Format column badge
+    # 3. Adult Public Rate with Cart Calculation
+    best_rate = 0.0
+
+    # Inspect green_fee_options for full adult rates first
+    options = item.get("green_fee_options", [])
+    if isinstance(options, list):
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            name = (opt.get("name") or opt.get("affiliation_type") or "").lower()
+            # Ignore junior/twilight rates if standard public exists
+            if "junior" in name or "youth" in name:
+                continue
+            rate = calculate_adult_with_cart_price(opt)
+            if rate > best_rate:
+                best_rate = rate
+
+    # If green_fee_options did not yield an adult rate, fall back to default_price
+    if best_rate <= 0 and isinstance(default_price, dict):
+        best_rate = calculate_adult_with_cart_price(default_price)
+
+    if best_rate <= 0:
+        return False, "", "", ""
+
+    price_str = f"${best_rate:.2f}"
+
     if 9 in bookable_holes and 18 in bookable_holes:
         holes_display = "9 / 18"
     elif 18 in bookable_holes:
@@ -256,7 +293,6 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
                 if not t_val:
                     continue
 
-                # Filter strictly by AM (< 12:00 PM) or PM (>= 12:00 PM)
                 if selected_time_period == "AM" and t_val >= noon:
                     continue
                 elif selected_time_period == "PM" and t_val < noon:
@@ -283,7 +319,7 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
                     "Day": date_obj.strftime("%A"),
                     "Time": t_val.strftime("%I:%M %p"),
                     "Open Spots": spots_display,
-                    "Price": price_str,
+                    "Price (Adult w/ Cart)": price_str,
                     "Holes": holes_display,
                     "Book": booking_url,
                     "RawTime": t_val
@@ -297,7 +333,7 @@ COLUMN_CONFIG = {
     "Course": st.column_config.TextColumn("Course", alignment="left"),
     "Time": st.column_config.TextColumn("Time", alignment="center"),
     "Open Spots": st.column_config.TextColumn("Open Spots", alignment="center"),
-    "Price": st.column_config.TextColumn("Price", alignment="center"),
+    "Price (Adult w/ Cart)": st.column_config.TextColumn("Price (Adult w/ Cart)", alignment="center"),
     "Holes": st.column_config.TextColumn("Holes", alignment="center"),
     "Book": st.column_config.LinkColumn("Book", display_text="Book Now ↗", alignment="center")
 }
@@ -361,7 +397,7 @@ if results:
                                 )
                         
                         with st.expander(f"View {len(day_matches)} Times & Book"):
-                            clean_day_df = day_matches.sort_values(by="RawTime")[["Course", "Time", "Open Spots", "Price", "Holes", "Book"]]
+                            clean_day_df = day_matches.sort_values(by="RawTime")[["Course", "Time", "Open Spots", "Price (Adult w/ Cart)", "Holes", "Book"]]
                             styled_day = clean_day_df.style.map(color_courses, subset=["Course"])
                             st.dataframe(
                                 styled_day,
