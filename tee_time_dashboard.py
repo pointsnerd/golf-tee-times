@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 from curl_cffi import requests
 
@@ -11,12 +11,6 @@ CHRONOGOLF_COURSES = [
         "club_slug": "d-arcy-ranch-golf-club",
         "ids": ["da3eb64e-8ff4-4a43-9958-2e36f108ce4e", "5a18dff5-d436-4574-b25f-75ad6fd82bd1"],
         "color": "#1E3A8A"  # Deep Blue
-    },
-    {
-        "name": "Lynx Ridge Golf Club",
-        "club_slug": "lynx-ridge-golf-club",
-        "ids": ["f0ffad1a-9857-4396-ba29-b3b6437ada54"],
-        "color": "#065F46"  # Forest Green
     },
     {
         "name": "River Spirit Golf Club",
@@ -33,15 +27,6 @@ CHRONOGOLF_COURSES = [
         "club_slug": "sundre-golf-club",
         "ids": ["804f0be1-3772-4dcb-bf8a-540dd4727ba0"],
         "color": "#581C87"  # Deep Purple
-    },
-    {
-        "name": "Fairmont Banff Springs",
-        "club_slug": "fairmont-banff-springs-golf-course",
-        "ids": [
-            "defd9bf6-3d27-40e8-b511-db6f6d1a9318", "31781402-a719-43d8-ae00-fb41a99dce2f",
-            "22476e2b-1c0a-4470-86bd-d55c8898b478"
-        ],
-        "color": "#0F766E"  # Dark Teal
     },
     {
         "name": "Sirocco Golf Club",
@@ -78,64 +63,84 @@ def parse_slot_time(item):
             pass
     return None
 
-def evaluate_chronogolf_slot(item, requested_spots, only_18_holes):
+def evaluate_chronogolf_slot(item, requested_spots, selected_round_length):
     """
-    Evaluates bookability using Chronogolf's default_price, player limits, and holes.
-    Returns (is_valid, open_spots, price_str, holes_display)
+    Evaluates bookability using Chronogolf's default_price, player limits, and selected round length (18 or 9).
+    Returns (is_valid, spots_display, price_str, holes_display)
     """
-    # 1. Hard filters
     if item.get("frozen") is True or item.get("out_of_capacity") is True:
-        return False, 0, "", ""
+        return False, "", "", ""
 
-    # 2. Player capacity checks
-    max_size = item.get("max_player_size", 4)
-    min_size = item.get("min_player_size", 1)
-
-    # Must be able to accommodate at least the requested player count
-    if max_size < requested_spots:
-        return False, 0, "", ""
-
-    # 3. Rate extraction
+    # Rate and price extraction
     default_price = item.get("default_price", {})
     if not isinstance(default_price, dict):
-        return False, 0, "", ""
+        return False, "", "", ""
 
     subtotal = default_price.get("subtotal") or default_price.get("green_fee")
     if subtotal is None or subtotal <= 0:
-        return False, 0, "", ""
+        return False, "", "", ""
 
     price_str = f"${subtotal:.2f}"
 
-    # 4. Holes validation (handles 18, 9, or hybrid [9, 18])
-    bookable_holes = []
+    # Capacity resolution across schema variations
+    max_size = item.get("max_player_size")
+    min_size = item.get("min_player_size", 1)
+
+    if not max_size:
+        if "player_counts" in item and isinstance(item["player_counts"], list):
+            valid_p = [int(p) for p in item["player_counts"] if str(p).isdigit()]
+            if valid_p:
+                max_size = max(valid_p)
+                min_size = min(valid_p)
+
+    if not max_size:
+        options = item.get("green_fee_options", [])
+        if isinstance(options, list):
+            for opt in options:
+                if isinstance(opt, dict) and "player_counts" in opt and isinstance(opt["player_counts"], list):
+                    valid_p = [int(p) for p in opt["player_counts"] if str(p).isdigit()]
+                    if valid_p:
+                        max_size = max(valid_p)
+                        min_size = min(valid_p)
+                        break
+
+    if not max_size:
+        max_size = 4
+
+    if max_size < requested_spots:
+        return False, "", "", ""
+
+    # Collect all playable hole options for this interval
+    bookable_holes = set()
     
     dp_holes = default_price.get("bookable_holes")
     if isinstance(dp_holes, list):
-        bookable_holes.extend(dp_holes)
+        bookable_holes.update(dp_holes)
     elif isinstance(dp_holes, int):
-        bookable_holes.append(dp_holes)
+        bookable_holes.add(dp_holes)
 
     course_obj = item.get("course", {})
     c_holes = course_obj.get("bookable_holes", [])
     if isinstance(c_holes, list):
-        bookable_holes.extend(c_holes)
+        bookable_holes.update(c_holes)
     elif isinstance(c_holes, int):
-        bookable_holes.append(c_holes)
+        bookable_holes.add(c_holes)
 
-    # Fallback to general holes field
     if not bookable_holes and "holes" in item:
         h_val = item.get("holes")
         if isinstance(h_val, list):
-            bookable_holes.extend(h_val)
+            bookable_holes.update(h_val)
         elif isinstance(h_val, int):
-            bookable_holes.append(h_val)
+            bookable_holes.add(h_val)
 
-    # Filter for 18 holes
-    can_play_18 = (18 in bookable_holes) or (not bookable_holes)  # Assume 18 if unspecified
-    if only_18_holes and not can_play_18:
-        return False, 0, "", ""
+    if not bookable_holes:
+        bookable_holes.add(18)
 
-    # Display label for holes
+    # Filter strictly against the selected radio option (18 or 9)
+    if selected_round_length not in bookable_holes:
+        return False, "", "", ""
+
+    # Format column badge
     if 9 in bookable_holes and 18 in bookable_holes:
         holes_display = "9 / 18"
     elif 18 in bookable_holes:
@@ -143,9 +148,7 @@ def evaluate_chronogolf_slot(item, requested_spots, only_18_holes):
     else:
         holes_display = "9"
 
-    # Display player range if restricted (e.g. "1-2" or "2-4")
     spots_display = f"{min_size}-{max_size}" if min_size != max_size else f"{max_size}"
-
     return True, spots_display, price_str, holes_display
 
 def fetch_course_teetimes(session, course, date_str):
@@ -209,9 +212,9 @@ st.title("⛳ First Right of Refusal Golf Tee Sheet")
 
 # Sidebar Controls
 st.sidebar.header("Filter Settings")
-max_time = st.sidebar.time_input("Latest Tee Time (Morning Cutoff)", datetime.strptime("11:59", "%H:%M").time())
+time_filter = st.sidebar.radio("Tee Time", options=["AM", "PM"], index=0)
 min_spots = st.sidebar.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=0)
-holes_filter = st.sidebar.radio("Round Length", options=["18 Holes (Including 9/18)", "Any Length"], index=0)
+round_length = st.sidebar.radio("Round Length", options=[18, 9], index=0)
 
 selected_courses = st.sidebar.multiselect(
     "Select Courses",
@@ -225,11 +228,12 @@ if st.button("🔄 Refresh Data (Force Clear Cache)"):
 
 # --- Data Fetching & Processing ---
 @st.cache_data(ttl=60)
-def load_all_data(requested_spots, only_18_holes):
+def load_all_data(requested_spots, selected_holes, selected_time_period):
     weekend_dates = get_target_weekend_dates(num_weeks=2)
     rows = []
     diagnostics = []
     session = requests.Session()
+    noon = time(12, 0)
 
     for course in CHRONOGOLF_COURSES:
         if course["name"] not in selected_courses:
@@ -252,37 +256,42 @@ def load_all_data(requested_spots, only_18_holes):
                 if not t_val:
                     continue
 
-                if t_val <= max_time:
-                    is_valid, spots_display, price_str, holes_display = evaluate_chronogolf_slot(item, requested_spots, only_18_holes)
-                    
-                    if not is_valid:
-                        continue
+                # Filter strictly by AM (< 12:00 PM) or PM (>= 12:00 PM)
+                if selected_time_period == "AM" and t_val >= noon:
+                    continue
+                elif selected_time_period == "PM" and t_val < noon:
+                    continue
 
-                    time_key = (course["name"], date_str, t_val.strftime("%H:%M"))
-                    if time_key in seen_times:
-                        continue
-                    seen_times.add(time_key)
+                is_valid, spots_display, price_str, holes_display = evaluate_chronogolf_slot(
+                    item, requested_spots, selected_holes
+                )
+                
+                if not is_valid:
+                    continue
 
-                    booking_url = f"https://www.chronogolf.ca/club/{course['club_slug']}#?date={date_str}"
+                time_key = (course["name"], date_str, t_val.strftime("%H:%M"))
+                if time_key in seen_times:
+                    continue
+                seen_times.add(time_key)
 
-                    rows.append({
-                        "Course": course["name"],
-                        "Date": date_str,
-                        "DateObj": date_obj,
-                        "Day": date_obj.strftime("%A"),
-                        "Time": t_val.strftime("%I:%M %p"),
-                        "Open Spots": spots_display,
-                        "Price": price_str,
-                        "Holes": holes_display,
-                        "Book": booking_url,
-                        "RawTime": t_val
-                    })
+                booking_url = f"https://www.chronogolf.ca/club/{course['club_slug']}#?date={date_str}"
+
+                rows.append({
+                    "Course": course["name"],
+                    "Date": date_str,
+                    "DateObj": date_obj,
+                    "Day": date_obj.strftime("%A"),
+                    "Time": t_val.strftime("%I:%M %p"),
+                    "Open Spots": spots_display,
+                    "Price": price_str,
+                    "Holes": holes_display,
+                    "Book": booking_url,
+                    "RawTime": t_val
+                })
     return rows, diagnostics
 
-only_18 = (holes_filter == "18 Holes (Including 9/18)")
-
 with st.spinner("Fetching live tee sheets..."):
-    results, diag_logs = load_all_data(min_spots, only_18)
+    results, diag_logs = load_all_data(min_spots, round_length, time_filter)
 
 COLUMN_CONFIG = {
     "Course": st.column_config.TextColumn("Course", alignment="left"),
@@ -303,7 +312,7 @@ if results:
     df = pd.DataFrame(results)
     
     col1, col2, col3 = st.columns(3)
-    col1.metric("Morning Times Available", len(df))
+    col1.metric(f"{time_filter} Times Available", len(df))
     col2.metric("Courses Monitored", len(df["Course"].unique()))
     col3.metric("Dates Tracked", len(target_dates))
 
@@ -324,7 +333,7 @@ if results:
                     st.subheader(formatted_date_header)
                     
                     if day_matches.empty:
-                        st.caption("No morning times open.")
+                        st.caption(f"No {time_filter} times open.")
                     else:
                         course_counts = day_matches["Course"].value_counts()
                         
@@ -361,7 +370,7 @@ if results:
                                 hide_index=True
                             )
 else:
-    st.info("No morning tee times found matching your criteria, or tee sheets are not yet open for these dates.")
+    st.info(f"No {time_filter} tee times found matching your criteria, or tee sheets are not yet open for these dates.")
 
 with st.expander("🛠 API Connection Diagnostics"):
     for log in diag_logs:
