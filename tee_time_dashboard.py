@@ -60,7 +60,6 @@ def parse_slot_time(item):
         return None
     raw_str = str(raw).strip()
     
-    # "9:00" or "09:00"
     if ":" in raw_str and "T" not in raw_str:
         try:
             parts = raw_str.split(":")
@@ -79,42 +78,75 @@ def parse_slot_time(item):
             pass
     return None
 
-def evaluate_chronogolf_slot(item, requested_spots):
+def evaluate_chronogolf_slot(item, requested_spots, only_18_holes):
     """
     Evaluates bookability using Chronogolf's default_price, player limits, and holes.
-    Returns (is_valid, open_spots, price_str, holes_count)
+    Returns (is_valid, open_spots, price_str, holes_display)
     """
-    # Check frozen, blocked, or out of capacity
+    # 1. Hard filters
     if item.get("frozen") is True or item.get("out_of_capacity") is True:
-        return False, 0, "", 0
+        return False, 0, "", ""
 
-    # Player size constraints
-    min_size = item.get("min_player_size", 1)
+    # 2. Player capacity checks
     max_size = item.get("max_player_size", 4)
+    min_size = item.get("min_player_size", 1)
 
-    # If the user is filtering for single players (1), but min_player_size is 2, it is not bookable
-    if requested_spots < min_size or requested_spots > max_size:
-        return False, 0, "", 0
+    # Must be able to accommodate at least the requested player count
+    if max_size < requested_spots:
+        return False, 0, "", ""
 
-    # Rate and pricing evaluation
+    # 3. Rate extraction
     default_price = item.get("default_price", {})
     if not isinstance(default_price, dict):
-        return False, 0, "", 0
+        return False, 0, "", ""
 
     subtotal = default_price.get("subtotal") or default_price.get("green_fee")
     if subtotal is None or subtotal <= 0:
-        return False, 0, "", 0
+        return False, 0, "", ""
 
     price_str = f"${subtotal:.2f}"
 
-    # Determine holes
-    holes = default_price.get("bookable_holes")
-    if not holes:
-        course_obj = item.get("course", {})
-        bookable = course_obj.get("bookable_holes", [])
-        holes = max(bookable) if bookable else 18
+    # 4. Holes validation (handles 18, 9, or hybrid [9, 18])
+    bookable_holes = []
+    
+    dp_holes = default_price.get("bookable_holes")
+    if isinstance(dp_holes, list):
+        bookable_holes.extend(dp_holes)
+    elif isinstance(dp_holes, int):
+        bookable_holes.append(dp_holes)
 
-    return True, max_size, price_str, holes
+    course_obj = item.get("course", {})
+    c_holes = course_obj.get("bookable_holes", [])
+    if isinstance(c_holes, list):
+        bookable_holes.extend(c_holes)
+    elif isinstance(c_holes, int):
+        bookable_holes.append(c_holes)
+
+    # Fallback to general holes field
+    if not bookable_holes and "holes" in item:
+        h_val = item.get("holes")
+        if isinstance(h_val, list):
+            bookable_holes.extend(h_val)
+        elif isinstance(h_val, int):
+            bookable_holes.append(h_val)
+
+    # Filter for 18 holes
+    can_play_18 = (18 in bookable_holes) or (not bookable_holes)  # Assume 18 if unspecified
+    if only_18_holes and not can_play_18:
+        return False, 0, "", ""
+
+    # Display label for holes
+    if 9 in bookable_holes and 18 in bookable_holes:
+        holes_display = "9 / 18"
+    elif 18 in bookable_holes:
+        holes_display = "18"
+    else:
+        holes_display = "9"
+
+    # Display player range if restricted (e.g. "1-2" or "2-4")
+    spots_display = f"{min_size}-{max_size}" if min_size != max_size else f"{max_size}"
+
+    return True, spots_display, price_str, holes_display
 
 def fetch_course_teetimes(session, course, date_str):
     """Fetch public tee sheet using Chrome TLS impersonation."""
@@ -179,7 +211,7 @@ st.title("⛳ First Right of Refusal Golf Tee Sheet")
 st.sidebar.header("Filter Settings")
 max_time = st.sidebar.time_input("Latest Tee Time (Morning Cutoff)", datetime.strptime("11:59", "%H:%M").time())
 min_spots = st.sidebar.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=0)
-holes_filter = st.sidebar.radio("Round Length", options=["18 Holes Only", "Any (9 or 18 Holes)"], index=0)
+holes_filter = st.sidebar.radio("Round Length", options=["18 Holes (Including 9/18)", "Any Length"], index=0)
 
 selected_courses = st.sidebar.multiselect(
     "Select Courses",
@@ -221,12 +253,9 @@ def load_all_data(requested_spots, only_18_holes):
                     continue
 
                 if t_val <= max_time:
-                    is_valid, open_spots, price_str, holes = evaluate_chronogolf_slot(item, requested_spots)
+                    is_valid, spots_display, price_str, holes_display = evaluate_chronogolf_slot(item, requested_spots, only_18_holes)
                     
                     if not is_valid:
-                        continue
-
-                    if only_18_holes and holes != 18:
                         continue
 
                     time_key = (course["name"], date_str, t_val.strftime("%H:%M"))
@@ -242,15 +271,15 @@ def load_all_data(requested_spots, only_18_holes):
                         "DateObj": date_obj,
                         "Day": date_obj.strftime("%A"),
                         "Time": t_val.strftime("%I:%M %p"),
-                        "Open Spots": open_spots,
+                        "Open Spots": spots_display,
                         "Price": price_str,
-                        "Holes": holes,
+                        "Holes": holes_display,
                         "Book": booking_url,
                         "RawTime": t_val
                     })
     return rows, diagnostics
 
-only_18 = (holes_filter == "18 Holes Only")
+only_18 = (holes_filter == "18 Holes (Including 9/18)")
 
 with st.spinner("Fetching live tee sheets..."):
     results, diag_logs = load_all_data(min_spots, only_18)
@@ -258,9 +287,9 @@ with st.spinner("Fetching live tee sheets..."):
 COLUMN_CONFIG = {
     "Course": st.column_config.TextColumn("Course", alignment="left"),
     "Time": st.column_config.TextColumn("Time", alignment="center"),
-    "Open Spots": st.column_config.NumberColumn("Open Spots", alignment="center"),
+    "Open Spots": st.column_config.TextColumn("Open Spots", alignment="center"),
     "Price": st.column_config.TextColumn("Price", alignment="center"),
-    "Holes": st.column_config.NumberColumn("Holes", alignment="center"),
+    "Holes": st.column_config.TextColumn("Holes", alignment="center"),
     "Book": st.column_config.LinkColumn("Book", display_text="Book Now ↗", alignment="center")
 }
 
