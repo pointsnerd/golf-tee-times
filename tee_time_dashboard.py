@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, time
+import calendar
+from datetime import datetime, date, timedelta, time
 from zoneinfo import ZoneInfo
 from curl_cffi import requests
 
@@ -210,21 +211,24 @@ def fetch_course_teetimes(session, course, date_str):
     except Exception as e:
         return [], f"Error: {e}"
 
-def get_sunday_start_calendar_dates(num_weeks=5):
-    """
-    Builds a calendar grid where Sunday starts each week.
-    Finds the most recent Sunday relative to today, then builds 35 consecutive days (5 weeks).
-    """
-    try:
-        today = datetime.now(ZoneInfo("America/Edmonton")).date()
-    except Exception:
-        today = datetime.now().date()
-        
-    days_since_sunday = (today.weekday() + 1) % 7
-    start_sunday = today - timedelta(days=days_since_sunday)
-    
-    calendar_dates = [start_sunday + timedelta(days=i) for i in range(num_weeks * 7)]
-    return calendar_dates, today
+# --- Calgary Local Date Configuration ---
+try:
+    calgary_today = datetime.now(ZoneInfo("America/Edmonton")).date()
+except Exception:
+    calgary_today = datetime.now().date()
+
+# Query only the next 14 consecutive days to ensure fast network loading
+monitored_14_days = [calgary_today + timedelta(days=i) for i in range(14)]
+monitored_14_set = {d.strftime("%Y-%m-%d") for d in monitored_14_days}
+
+# Calendar display uses current Calgary month
+curr_year = calgary_today.year
+curr_month = calgary_today.month
+month_title = f"{calendar.month_name[curr_month]} {curr_year}"
+
+# Build full month matrix starting on Sunday
+cal_obj = calendar.Calendar(firstweekday=calendar.SUNDAY)
+month_weeks = cal_obj.monthdayscalendar(curr_year, curr_month)
 
 # --- UI Setup ---
 st.set_page_config(page_title="First Right of Refusal Golf Tee Sheet", layout="wide")
@@ -264,20 +268,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-calendar_dates, today_date = get_sunday_start_calendar_dates(num_weeks=5)
-
-# --- 1. Top of Sidebar: Calendar Placeholder ---
+# 1. Top of Sidebar: Calendar Placeholder
 cal_top_container = st.sidebar.container()
 
-# --- 2. Below Calendar: Expandable Filter Settings ---
+# 2. Below Calendar: Expandable Filter Settings
 with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
-    # 1. Minimum Open Spots (defaults as 4)
     min_spots = st.selectbox("Minimum Open Spots", options=[1, 2, 3, 4], index=3)
-    # 2. Tee Time (defaults as AM)
     time_filter = st.radio("Tee Time", options=["AM", "PM", "All Day"], index=0)
-    # 3. Round Length (defaults as 18)
     round_length = st.radio("Round Length", options=[18, 9], index=0)
-    # 4. Select Courses
     selected_courses = st.multiselect(
         "Select Courses",
         options=[c["name"] for c in CHRONOGOLF_COURSES],
@@ -287,7 +285,7 @@ with st.sidebar.expander("⚙️ Filter Settings", expanded=False):
         st.cache_data.clear()
         st.rerun()
 
-# --- 3. Data Fetching & Processing ---
+# --- 3. Data Fetching & Processing (14 Days Only) ---
 @st.cache_data(ttl=60)
 def load_all_data(requested_spots, selected_holes, selected_time_period):
     rows = []
@@ -298,10 +296,7 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
     for course in CHRONOGOLF_COURSES:
         if course["name"] not in selected_courses:
             continue
-        for date_obj in calendar_dates:
-            if date_obj < today_date:
-                continue
-                
+        for date_obj in monitored_14_days:
             date_str = date_obj.strftime("%Y-%m-%d")
             raw_items, diag_msg = fetch_course_teetimes(session, course, date_str)
             diagnostics.append(f"{course['name']} [{date_str}]: {diag_msg}")
@@ -353,7 +348,7 @@ def load_all_data(requested_spots, selected_holes, selected_time_period):
                 })
     return rows, diagnostics
 
-with st.spinner("Fetching live tee sheets..."):
+with st.spinner("Fetching live tee sheets (14-day window)..."):
     results, diag_logs = load_all_data(min_spots, round_length, time_filter)
 
 day_counts = {}
@@ -361,19 +356,19 @@ if results:
     df_raw = pd.DataFrame(results)
     day_counts = df_raw["Date"].value_counts().to_dict()
 
-# Default to first future date with availability or today
+# Default selection: earliest future monitored date with availability, else today
 future_with_times = [
-    d.strftime("%Y-%m-%d") for d in calendar_dates 
-    if d >= today_date and day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0
+    d.strftime("%Y-%m-%d") for d in monitored_14_days 
+    if day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0
 ]
-default_selected = future_with_times[0] if future_with_times else today_date.strftime("%Y-%m-%d")
+default_selected = future_with_times[0] if future_with_times else calgary_today.strftime("%Y-%m-%d")
 
 if "active_calendar_date" not in st.session_state:
     st.session_state["active_calendar_date"] = default_selected
 
-# --- Populate Calendar at Top of Sidebar ---
+# --- Render Full Month Calendar at Top of Sidebar ---
 with cal_top_container:
-    st.markdown("### 📅 Select Day (5 Weeks)")
+    st.markdown(f"### 📅 {month_title}")
     
     cal_head_cols = st.columns(7)
     day_headers = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
@@ -383,39 +378,40 @@ with cal_top_container:
             unsafe_allow_html=True
         )
 
-    weeks = [calendar_dates[i:i+7] for i in range(0, 35, 7)]
-
-    for week_dates in weeks:
+    for week in month_weeks:
         w_cols = st.columns(7)
-        for d_idx, date_obj in enumerate(week_dates):
-            d_str = date_obj.strftime("%Y-%m-%d")
-            day_num = date_obj.strftime("%d").lstrip("0")
-            month_abbr = date_obj.strftime("%b")
-            count = day_counts.get(d_str, 0)
-            is_past = date_obj < today_date
-            has_times = (count > 0)
-            is_selected = (st.session_state["active_calendar_date"] == d_str)
-
-            btn_text = f"{month_abbr} {day_num}"
-            btn_type = "primary" if is_selected else "secondary"
-
+        for d_idx, day_num in enumerate(week):
             with w_cols[d_idx]:
-                if is_past or not has_times:
-                    st.button(
-                        btn_text, 
-                        key=f"side_cal_{d_str}", 
-                        disabled=True, 
-                        use_container_width=True
-                    )
+                if day_num == 0:
+                    st.button(" ", key=f"empty_day_{w_cols}_{d_idx}", disabled=True, use_container_width=True)
                 else:
-                    if st.button(
-                        btn_text, 
-                        key=f"side_cal_{d_str}", 
-                        type=btn_type, 
-                        use_container_width=True
-                    ):
-                        st.session_state["active_calendar_date"] = d_str
-                        st.rerun()
+                    d_obj = date(curr_year, curr_month, day_num)
+                    d_str = d_obj.strftime("%Y-%m-%d")
+                    is_monitored = d_str in monitored_14_set
+                    count = day_counts.get(d_str, 0)
+                    has_times = (count > 0)
+                    is_active = (st.session_state["active_calendar_date"] == d_str)
+                    
+                    btn_text = f"Oct {day_num}" if curr_month == 10 else f"{d_obj.strftime('%b')} {day_num}"
+                    btn_type = "primary" if is_active else "secondary"
+
+                    # Only clickable if within the 14-day monitored window AND has tee times
+                    if is_monitored and has_times:
+                        if st.button(
+                            btn_text, 
+                            key=f"side_cal_{d_str}", 
+                            type=btn_type, 
+                            use_container_width=True
+                        ):
+                            st.session_state["active_calendar_date"] = d_str
+                            st.rerun()
+                    else:
+                        st.button(
+                            btn_text, 
+                            key=f"side_cal_{d_str}", 
+                            disabled=True, 
+                            use_container_width=True
+                        )
 
     st.write("---")
 
@@ -445,7 +441,7 @@ if results:
     metric_label = f"{time_filter} Times Available" if time_filter != "All Day" else "Total Times Available"
     c1.metric(metric_label, len(df))
     c2.metric("Courses Monitored", len(df["Course"].unique()))
-    c3.metric("Window", f"{calendar_dates[0].strftime('%b %d')} – {calendar_dates[-1].strftime('%b %d')}")
+    c3.metric("Monitored Horizon", f"{monitored_14_days[0].strftime('%b %d')} – {monitored_14_days[-1].strftime('%b %d')}")
 
     st.write("---")
 
