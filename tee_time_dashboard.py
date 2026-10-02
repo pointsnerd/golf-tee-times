@@ -248,10 +248,9 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# Custom responsive CSS with explicit mobile protection for the 7 columns
+# Responsive layout handling desktop vs mobile explicitly
 st.markdown("""
 <style>
-    /* Global Base */
     .stApp {
         background-color: #0F172A;
         color: #F8FAFC;
@@ -283,34 +282,48 @@ st.markdown("""
 
     /* ---------------- MOBILE (Screens < 1024px) ---------------- */
     @media (max-width: 1023px) {
-        /* Sidebar overlays full screen cleanly without squishing the main page */
+        /* Let Streamlit's native drawer size naturally without pushing content offscreen */
         section[data-testid="stSidebar"] {
             width: 100vw !important;
+            min-width: 100vw !important;
             max-width: 100vw !important;
+            box-sizing: border-box !important;
+            padding: 0.5rem !important;
         }
-
-        /* FORCE 7 columns to remain horizontal and prevent vertical stacking */
+        section[data-testid="stSidebar"] > div {
+            width: 100% !important;
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+        }
+        /* Ensure calendar columns fit side-by-side on mobile without overflow */
         section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: nowrap !important;
+            justify-content: space-between !important;
             gap: 2px !important;
+            width: 100% !important;
         }
-        section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] > div {
-            width: 14.28% !important;
+        section[data-testid="stSidebar"] div[data-testid="stColumn"] {
+            flex: 1 1 0% !important;
             min-width: 0 !important;
-            flex: 1 1 0 !important;
+            padding: 0 !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stButton"] {
+            width: 100% !important;
         }
         section[data-testid="stSidebar"] div[data-testid="stButton"] button {
             width: 100% !important;
-            padding: 2px 0px !important;
-            min-height: 34px !important;
+            padding: 4px 0px !important;
+            min-height: 32px !important;
             font-size: 10px !important;
             border-radius: 4px !important;
+            overflow: hidden !important;
+            text-overflow: clip !important;
+            white-space: nowrap !important;
         }
     }
 
-    /* Table text styling */
     div[data-testid="stDataFrame"] td {
         font-size: 13.5px;
     }
@@ -361,7 +374,6 @@ def load_raw_teetimes(selected_course_names):
 with st.spinner("Fetching live tee sheets..."):
     cached_teetimes, diag_logs = load_raw_teetimes(tuple(selected_courses))
 
-# In-memory evaluation against user filter settings
 noon = time(12, 0)
 results = []
 
@@ -416,7 +428,6 @@ if results:
     df_raw = pd.DataFrame(results)
     day_counts = df_raw["Date"].value_counts().to_dict()
 
-# Default to first available monitored date or today
 future_with_times = [
     d.strftime("%Y-%m-%d") for d in monitored_14_days 
     if day_counts.get(d.strftime("%Y-%m-%d"), 0) > 0
@@ -510,7 +521,6 @@ if results:
 
     st.markdown(f"### 📋 Tee Sheet: **{sel_dt.strftime('%A, %B %d, %Y')}**")
 
-    # Metrics grid
     course_cols = st.columns(len(selected_courses))
     course_counts = day_matches["Course"].value_counts() if not day_matches.empty else {}
 
